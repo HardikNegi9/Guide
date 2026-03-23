@@ -137,6 +137,52 @@ Artifacts in experiments/paper1_inceptiontime/xai/:
 
 ---
 
-## 9. Reference
+## 9. Architecture Blocks Explained
+
+Architecture diagram blocks:
+1. Input ECG Segment: accepts one beat window per sample with shape B x 1 x L.
+2. Stem Conv/Norm/Activation: builds a richer initial channel representation from the raw waveform.
+3. Inception Blocks 1-6: extract features at multiple temporal scales in parallel.
+4. 1x1 Bottleneck: compresses channels before wide kernels to reduce compute.
+5. Conv k=11, k=21, k=41 branches: detect short, medium, and long temporal motifs.
+6. MaxPool + 1x1 branch: adds a pooled context path and keeps branch diversity.
+7. Concat + BatchNorm + GELU/ReLU: merges branch outputs and stabilizes activations.
+8. Residual Add 1 and 2: improve gradient flow in deeper stacks.
+9. Global Average Pooling: converts temporal feature maps into a fixed-length vector.
+10. Dropout: regularizes the classifier input.
+11. Linear Classifier: maps features to 5 class logits.
+12. Softmax: converts logits to class probabilities.
+
+## 10. Training Flowchart Blocks Explained
+
+Training pipeline blocks:
+1. Raw R-peak Segments: beat-level source input.
+2. balance_after_split gate: chooses leakage-safe split-first or legacy pre-balanced path.
+3. Split train/val/test first: creates clean evaluation splits.
+4. Load pre-balanced npy files: legacy path that expects prepared arrays.
+5. Apply SMOTE/ADASYN on train split: balances only training data in split-first mode.
+6. Build DataLoaders: packages tensors for iteration.
+7. Train ContextAwareInceptionTime: optimization loop across epochs.
+8. Validate and Early Stop: monitors generalization and stops when improvement stalls.
+9. Save best checkpoint: persists the best validation model.
+10. Evaluate on test split: computes final held-out metrics.
+
+## 11. Equation Rendering Compatibility
+
+For Markdown preview compatibility, keep equations in multiline display blocks:
+
+$$
+\hat{y} = \mathrm{Softmax}(Wz + b)
+$$
+
+$$
+\mathcal{L}_{\mathrm{CE}} = -\sum_{c=1}^{C} y_c \log(\hat{y}_c)
+$$
+
+Use `\times` in math instead of Unicode multiplication symbols where possible.
+
+---
+
+## 12. Reference
 - Fawaz et al., InceptionTime: Finding AlexNet for Time Series Classification.
 - Repository config: configs/paper1_inceptiontime.yaml

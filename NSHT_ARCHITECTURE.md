@@ -604,6 +604,55 @@ python scripts/extract_nsht_prototypes.py \
 
 ---
 
+## 13. Architecture Blocks Explained
+
+Architecture blocks in the detailed diagram:
+1. ECG Segment Input: heartbeat-level 1D waveform tensor.
+2. Learnable Morlet Front-End: trainable denoising and frequency filtering.
+3. P-Wave Specialized Head: low-frequency morphology emphasis.
+4. CWT Scalogram Generator: time-frequency conversion for spectral path.
+5. 1D Inception Encoder: temporal multi-scale feature extractor.
+6. 2D CNN Spectral Encoder: local spectral pattern extraction.
+7. Low-Frequency Spectral Head: explicit low-band spectral features.
+8. Cross-Modal Attention Fusion: aligns temporal and spectral context.
+9. Global Pool + Concat: merges fused, p-wave, and low-frequency vectors.
+10. Classifier MLP: maps concatenated features to class logits.
+11. Prototype Head/Loss: enforces latent class structure when enabled.
+12. CE + Prototype Total Loss: joint optimization objective.
+
+## 14. Flowchart Blocks Explained
+
+Runtime flowchart blocks:
+1. Raw R-peak Segments: source beat arrays.
+2. balance_after_split gate: split-first vs pre-balanced loading route.
+3. Split and train-only balancing: leakage-safe balancing on train split.
+4. DataLoader build: batching for both 1D and 2D branches.
+5. Train NSHT_Dual_Evo: optimization over epochs.
+6. Best-checkpoint save: validation-selected model snapshot.
+7. Test evaluation: final metrics on untouched split.
+8. XAI execution: wavelet, attention, stream-energy visual artifacts.
+9. Prototype export path: optional prototype-space embedding extraction.
+
+## 15. Equation Rendering Compatibility
+
+Use multiline display blocks for robust Markdown preview:
+
+$$
+\psi(t)=e^{-\frac{t^2}{2\sigma^2}}\cos\!\left(2\pi f_0\frac{t}{\sigma}\right)
+$$
+
+$$
+\mathcal{L}_{\mathrm{proto}}=\frac{1}{N}\sum_{i=1}^{N}\lVert f_i-p_{y_i}\rVert_2^2
+$$
+
+$$
+\mathcal{L}_{\mathrm{total}}=\mathcal{L}_{\mathrm{CE}}+\lambda\,\mathcal{L}_{\mathrm{proto}}
+$$
+
+For compatibility, prefer `\lVert\cdot\rVert` over mixed Unicode norm bars in equations.
+
+---
+
 ## Appendix: File Structure
 
 ```

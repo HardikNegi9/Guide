@@ -272,6 +272,44 @@ Common issues and fixes:
 - Runtime mismatch: ensure Paper 1 checkpoint is used with Paper 1 config.
 - Unexpected split behavior: pass `--data.balance_after_split` explicitly when needed.
 
+## Architecture Blocks Explained
+
+Core architecture blocks:
+1. Input ECG Segment: one heartbeat-centered 1D sequence.
+2. Inception Block(s): multi-branch temporal feature extraction.
+3. 1x1 Bottleneck: channel compression before large temporal kernels.
+4. Multi-kernel branches: parallel convolutions for different temporal receptive fields.
+5. Residual Add: skip connection for stable deep training.
+6. Global Average Pooling: temporal-to-vector reduction.
+7. Dense FC Layer: final logits for AAMI classes.
+8. Softmax Output: normalized class probabilities.
+
+## Flowchart Blocks Explained
+
+Pipeline flow blocks:
+1. Raw ECG Data: source records from selected dataset mode.
+2. R-Peak Segmentation: beat extraction centered on target peaks.
+3. balance_after_split decision: selects split-first or pre-balanced mode.
+4. Train-only balancing block: applies SMOTE/ADASYN only on train split when enabled.
+5. DataLoaders: batched iterable tensors for training/evaluation.
+6. Train + Validate + Early Stopping: optimization and model selection.
+7. Checkpoint + Test Evaluation: final held-out metrics.
+8. Paper 1 XAI block: Grad-CAM, Integrated Gradients, and branch summaries.
+
+## Equation Rendering Compatibility
+
+If equations fail in preview, keep display equations in multiline form:
+
+$$
+\mathrm{GAP}(x) = \frac{1}{L}\sum_{t=1}^{L} x_t
+$$
+
+$$
+\mathcal{L} = -\sum_{c=1}^{C} y_c\log(\hat{y}_c)
+$$
+
+Prefer `\times` in math mode and avoid mixed Unicode symbols inside equations.
+
 ## 10. References
 - Fawaz, H. I., et al. "InceptionTime: Finding AlexNet for Time Series Classification." Data Mining and Knowledge Discovery, 2020.
 - Paper1 config: configs/paper1_inceptiontime.yaml

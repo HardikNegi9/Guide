@@ -124,7 +124,44 @@ Expected artifacts:
 
 ---
 
-## 9. Future Architecture Upgrades
+## 9. Architecture Blocks Explained
+
+System-level blocks:
+1. Balanced ECG Segments: common base input for specialist models.
+2. Signal Expert: InceptionTime probability outputs.
+3. Vision Expert: EfficientNet probability outputs.
+4. Hybrid Expert: NSHT-style probability outputs.
+5. Clinical Feature Matrix: handcrafted/domain feature stream.
+6. Meta Feature Builder: concatenates model outputs and engineered statistics.
+7. Consensus and Uncertainty Features: mean, std, disagreement, entropy.
+8. Meta-Learner: final classifier over fused meta-features.
+9. Final Prediction: 5-class arrhythmia output.
+
+## 10. Flowchart Blocks Explained
+
+Training/selection pipeline blocks:
+1. Build train/val/test meta-features: synchronized feature matrix construction.
+2. Optuna search: hyperparameter optimization over meta-model candidates.
+3. Train candidate model: fit with sampled hyperparameters.
+4. Validation scoring: evaluate candidate quality.
+5. Better-score decision gate: update best checkpoint conditionally.
+6. Refit/finalize best model: produce final selected model.
+7. Test evaluation + confusion matrix: held-out performance report.
+8. Save artifacts: persist model and metrics outputs.
+
+## 11. Equation Rendering Compatibility
+
+This guide is mostly architectural and feature-flow oriented. For consistency in Markdown preview, use multiline math blocks when adding equations:
+
+$$
+\hat{y}=f_{\mathrm{meta}}\!\left([p_{\mathrm{signal}},p_{\mathrm{vision}},p_{\mathrm{hybrid}},u,\phi_{\mathrm{clinical}}]\right)
+$$
+
+Prefer ASCII text around equations and keep one expression per display block.
+
+---
+
+## 12. Future Architecture Upgrades
 
 1. Replace static script flow with modular src-based data module.
 2. Add split-first balancing directly in meta pipeline.

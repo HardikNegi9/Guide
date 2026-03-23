@@ -436,6 +436,49 @@ Common issues and fixes:
 - Slow explanation: reduce explained samples per class.
 - Inconsistent splits: pass `--data.balance_after_split` explicitly.
 
+## Architecture Blocks Explained
+
+Architecture diagram blocks:
+1. Input Scalogram: 3-channel 2D time-frequency image input.
+2. EfficientNet feature extractor: hierarchical convolutional representation learning.
+3. Feature map projection: 1x1 projection to compact embedding width.
+4. Tokenization stage: flattening spatial grid into sequence tokens.
+5. Positional embeddings + CLS token: inject order/context for sequence modeling.
+6. Transformer encoder or current CBAM runtime path: global relational modeling (legacy description) vs attention-augmented CNN path (current runtime).
+7. Layer normalization and classifier head: stabilized classification pipeline.
+8. Softmax output: final class probabilities.
+
+## Flowchart Blocks Explained
+
+Pipeline blocks:
+1. Raw ECG Data: selected source mode (mitbih/incart/combined).
+2. R-Peak Segmentation: beat windows extracted from records.
+3. balance_after_split decision: split-first train-only balancing or pre-balanced data path.
+4. Train-only balancing block: SMOTE/ADASYN on training split.
+5. CWT generation block: transform 1D beats into 2D scalograms.
+6. Resize/normalize/channel stack: tensor preparation for model input.
+7. Model inference block: AttentionEfficientNet + CBAM path in current runtime.
+8. Evaluation block: checkpoint selection and test metrics.
+9. XAI block: Grad-CAM + CBAM spatial/channel attention outputs.
+
+## Equation Rendering Compatibility
+
+Use multiline KaTeX blocks for robust preview rendering:
+
+$$
+W(a,b)=\frac{1}{\sqrt{a}}\int_{-\infty}^{\infty}x(t)\,\psi^{*}\!\left(\frac{t-b}{a}\right)dt
+$$
+
+$$
+\hat{y}_c=\frac{\exp(z_c)}{\sum_{k=1}^{C}\exp(z_k)}
+$$
+
+$$
+\mathcal{L}=-\sum_{c=1}^{C}\tilde{y}_c\log(\hat{y}_c)
+$$
+
+Prefer `\times` in math mode and keep one equation per display block.
+
 ## 12. References
 
 - Tan, M. & Le, Q. V., "EfficientNet: Rethinking Model Scaling for Convolutional Neural Networks." ICML 2019.

@@ -661,6 +661,53 @@ Common issues and fixes:
 - Empty attention maps: confirm valid evaluation samples are being selected per class.
 - Runtime OOM during XAI: reduce samples per class or disable t-SNE with `--no-tsne`.
 
+## Architecture Blocks Explained
+
+Architecture blocks:
+1. Raw ECG Signal: heartbeat segment input.
+2. Learnable Morlet Front-End: adaptive denoising/filtering.
+3. P-Wave Head: low-frequency morphology emphasis.
+4. CWT Scalogram Path: spectral view generation.
+5. 1D Inception Encoder: temporal multi-scale feature extraction.
+6. 2D CNN Encoder: spectral feature extraction from scalograms.
+7. Low-Frequency Head: dedicated low-band spectral descriptor.
+8. Cross-Modal Attention: temporal queries over spectral keys/values.
+9. Global Pool + Concat: feature fusion to 192-dim representation.
+10. Classifier MLP: logits for 5 AAMI classes.
+11. Prototype Loss path: latent clustering regularization.
+12. Total Loss node: CE plus weighted prototype term.
+
+## Flowchart Blocks Explained
+
+Flow blocks:
+1. Raw ECG and segmentation block: creates beat-level inputs.
+2. Split strategy gate: split-first vs pre-balanced route.
+3. Train-only balancing block: SMOTE/ADASYN on training split only.
+4. Dual-input loader block: synchronized 1D and 2D tensors.
+5. Dual-stream model block: wavelet-temporal and spectral branches.
+6. Fusion + classifier block: prediction logits.
+7. Checkpoint/test block: model selection and evaluation.
+8. XAI block: wavelet, attention, and stream contribution plots.
+9. Prototype export block: optional embedding and t-SNE outputs.
+
+## Equation Rendering Compatibility
+
+Use multiline KaTeX blocks for reliable preview:
+
+$$
+\mathcal{L}_{\mathrm{proto}}=\frac{1}{N}\sum_{i=1}^{N}\lVert z_i-p_{y_i}\rVert_2^2
+$$
+
+$$
+\lambda_t=0.01+0.09\,\frac{t}{T}
+$$
+
+$$
+\mathcal{L}_{\mathrm{total}}=\mathcal{L}_{\mathrm{CE}}+\lambda_t\,\mathcal{L}_{\mathrm{proto}}
+$$
+
+Prefer `\lVert\cdot\rVert` and avoid mixed Unicode symbols inside equation blocks.
+
 ## 14. References
 
 - Fawaz, H. I. et al., "InceptionTime: Finding AlexNet for Time Series Classification." Data Mining and Knowledge Discovery, 2020.
