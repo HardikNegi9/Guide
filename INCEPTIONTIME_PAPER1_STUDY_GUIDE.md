@@ -145,11 +145,18 @@ Below is a Mermaid flowchart describing the end-to-end pipeline:
 
 ```mermaid
 flowchart TD
-    A[Raw ECG Data] --> B[Preprocessing & Segmentation]
-    B --> C[Dataset Balancing: SMOTE/ADASYN]
-    C --> D[Train/Val/Test Split or K-Fold Split]
-    D --> E[InceptionTime Model]
-    E --> F[Prediction & Evaluation]
+    A[Raw ECG Data] --> B[R-Peak Segmentation]
+    B --> C{balance_after_split?}
+    C -->|true| D[Split train/val/test first]
+    C -->|false| E[Load pre-balanced data files]
+    D --> F[Apply SMOTE or ADASYN only on train split]
+    F --> G[Build DataLoaders]
+    E --> G
+    G --> H[Train ContextAwareInceptionTime]
+    H --> I[Validate + Early Stopping]
+    I --> J[Save Best Checkpoint]
+    J --> K[Test Evaluation]
+    K --> L[Paper 1 XAI: Grad-CAM + IG + Branch Summary]
 ```
 
 ---
@@ -213,6 +220,20 @@ These runtime changes do **not** alter the architecture, labels, loss definition
 - BF16 and TF32 can introduce small numerical differences relative to strict FP32, so repeated runs may not be bit-identical.
 - In practice, the expected effect is **same accuracy range with faster training**, not a systematic accuracy drop.
 
+### 8.4. Reproducibility and Data Integrity Checklist
+
+Before long runs, verify:
+- The same mode is used across training, evaluation, and XAI (`mitbih`, `incart`, or `combined`).
+- `balance_after_split` is consistently enabled or disabled across scripts.
+- Batch size and worker count are feasible for your container/host limits.
+- Checkpoint path and config path correspond to the same experiment family.
+
+Recommended logging for each run:
+- Git commit hash
+- Config snapshot
+- Effective CLI overrides
+- Final train/val/test sample counts per class
+
 ---
 
 ## 9. Current XAI Workflow in This Repository
@@ -243,6 +264,13 @@ Outputs are written under `experiments/paper1_inceptiontime/xai/` and include:
 - `branch_summary.png` and `branch_summary.json`
 - `attributions.npz`
 - per-sample folders and global `summary.json`
+
+### 9.4 Troubleshooting
+
+Common issues and fixes:
+- Empty XAI output folder: verify checkpoint path and class sample availability.
+- Runtime mismatch: ensure Paper 1 checkpoint is used with Paper 1 config.
+- Unexpected split behavior: pass `--data.balance_after_split` explicitly when needed.
 
 ## 10. References
 - Fawaz, H. I., et al. "InceptionTime: Finding AlexNet for Time Series Classification." Data Mining and Knowledge Discovery, 2020.

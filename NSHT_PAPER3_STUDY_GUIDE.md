@@ -434,42 +434,46 @@ The live NSHT training path in this repository has been updated for containerize
 - BF16/TF32 can slightly change floating-point rounding, so runs may differ marginally at the fourth decimal place.
 - The expected result is **same accuracy regime with higher throughput and fewer stalled jobs**.
 
+### 7.3. Reproducibility and Consistency Checklist
+
+Before long NSHT training runs:
+- Confirm prototype-enabled/disabled mode is intentional.
+- Keep `balance_after_split` consistent between train, evaluate, and explain scripts.
+- Verify wavelet/scalogram preprocessing parameters are unchanged across experiments.
+- Log run metadata including config, seed, and checkpoint lineage.
+
+Recommended experiment artifacts:
+- Per-epoch train/val metrics
+- Confusion matrix snapshots
+- Prototype loss trend when prototypes are enabled
+
 ---
 
 ## 8. Flowchart: End-to-End Pipeline
 
 ```mermaid
 flowchart TD
-    A["Raw ECG Data<br/>(MIT-BIH + INCART)"] --> B["Preprocessing<br/>R-Peak Segmentation"]
-    B --> C["Dataset Balancing<br/>(SMOTE/ADASYN)"]
-    C --> D["Train/Val/Test Split"]
+    A["Raw ECG Data<br/>(MIT-BIH + INCART)"] --> B["R-Peak Segmentation"]
+    B --> C{"balance_after_split?"}
+    C -->|true| D["Split train/val/test first"]
+    C -->|false| E["Load pre-balanced arrays"]
+    D --> F["Apply SMOTE or ADASYN only on train split"]
+    F --> G["Build dual-input loaders"]
+    E --> G
 
-    D --> E["1D Signal Path"]
-    D --> F["2D Scalogram Path"]
-
-    E --> E1["Learnable Wavelet<br/>(32 Morlet Filters)"]
-    E --> E2["P-Wave Head<br/>(Large Kernels)"]
-    E1 --> E3["1D Inception Encoder<br/>(3 Modules + Residual)"]
-
-    F --> F1["CWT Scalogram<br/>(Morlet, 64 scales)"]
-    F1 --> F2["2D CNN Encoder<br/>(4 Blocks)"]
-    F1 --> F3["Low-Freq Head<br/>(Bottom 25%)"]
-
-    E3 --> G["Cross-Modal Attention<br/>(Q: 1D, K/V: 2D)"]
-    F2 --> G
-
-    G --> H["Global Avg Pool"]
-    H --> I["Concat: Fused + PWave + LowFreq<br/>(128 + 32 + 32 = 192)"]
-    E2 --> I
-    F3 --> I
-
-    I --> J["MLP Classifier<br/>(192 → 128 → 5)"]
-    I -.-> K["Prototype Loss<br/>(λ · ||z - p_y||²)"]
-    J -.-> L["CE Loss<br/>(label smooth=0.1)"]
-    K -.-> M["Total Loss"]
-    L -.-> M
-
-    J --> N["5-Class Prediction<br/>(N, S, V, F, Q)"]
+    G --> H["1D Wavelet + Inception Path"]
+    G --> I["2D Scalogram + CNN Path"]
+    H --> J["Cross-Modal Attention Fusion"]
+    I --> J
+    J --> K["Concat with P-Wave and Low-Freq Heads"]
+    K --> L["Classifier (5 classes)"]
+    K -.-> M["Prototype Consistency Loss"]
+    L -.-> N["Cross-Entropy Loss"]
+    M -.-> O["Total Loss"]
+    N -.-> O
+    L --> P["Best Checkpoint + Test Evaluation"]
+    P --> Q["Paper 3 XAI<br/>Wavelet + Attention + Stream Contribution"]
+    P --> R["Optional Prototype Export + t-SNE"]
 ```
 
 ---
@@ -649,6 +653,13 @@ python scripts/extract_nsht_prototypes.py \
     --model-path checkpoints/paper3_nsht/best_model.pt \
     --config configs/paper3_nsht.yaml
 ```
+
+### 13.5 Troubleshooting
+
+Common issues and fixes:
+- Missing prototype plots: ensure the checkpoint was trained with prototype support enabled.
+- Empty attention maps: confirm valid evaluation samples are being selected per class.
+- Runtime OOM during XAI: reduce samples per class or disable t-SNE with `--no-tsne`.
 
 ## 14. References
 

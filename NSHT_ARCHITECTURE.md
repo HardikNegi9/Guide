@@ -236,6 +236,55 @@ Raw ECG → Fixed Wavelet → Hard Threshold → Denoised → CNN
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
+### 4.1 Detailed Mermaid Architecture
+
+```mermaid
+flowchart TD
+    A[ECG Segment Bx1x216] --> B[Learnable Morlet Wavelet Front-End]
+    A --> C[P-Wave Specialized Head]
+    A --> D[CWT Scalogram Generator]
+
+    B --> E[1D Inception Encoder]
+    D --> F[2D CNN Spectral Encoder]
+    D --> G[Low-Frequency Spectral Head]
+
+    E --> H[Cross-Modal Attention Fusion]
+    F --> H
+
+    H --> I[Temporal-Spectral Fused Features]
+    I --> J[Global Average Pooling]
+    J --> K[Concat Fused + P-Wave + Low-Freq]
+    C --> K
+    G --> K
+
+    K --> L[Classifier MLP]
+    L --> M[5-Class Logits]
+    M --> N[Softmax Predictions]
+
+    K -.-> O[Prototype Head]
+    O -.-> P[Prototype Consistency Loss]
+    M -.-> Q[Cross-Entropy Loss]
+    P -.-> R[Total Loss]
+    Q -.-> R
+```
+
+### 4.2 Runtime Pipeline (Split-First and XAI)
+
+```mermaid
+flowchart TD
+    A[Raw R-peak Segments] --> B{balance_after_split?}
+    B -->|true| C[Split train/val/test first]
+    B -->|false| D[Load pre-balanced arrays]
+    C --> E[Balance only train split via SMOTE/ADASYN]
+    E --> F[Build NSHT DataLoaders]
+    D --> F
+    F --> G[Train NSHT_Dual_Evo]
+    G --> H[Save best checkpoint]
+    H --> I[Run test evaluation]
+    I --> J[Run Paper 3 XAI scripts]
+    J --> K[Wavelet + attention + stream + prototype artifacts]
+```
+
 ---
 
 ## 5. Technical Components

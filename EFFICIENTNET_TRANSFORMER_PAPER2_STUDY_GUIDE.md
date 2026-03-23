@@ -284,24 +284,37 @@ These optimizations are runtime-level changes only.
 - BF16/TF32 may cause small numerical variation between runs.
 - The expected outcome is **higher throughput with similar validation/test accuracy**, not an architectural change in model behavior.
 
+### 6.4. Operational Checklist for Stable Runs
+
+Before training:
+- Confirm your selected pipeline variant (legacy transformer write-up vs current AttentionEfficientNet runtime path).
+- Ensure CWT dependencies (`pywt`, `cv2`) are installed in the active environment.
+- Keep worker count conservative when running in containerized environments.
+- Validate that config overrides and checkpoint naming are consistent for Paper 2.
+
+During training:
+- Monitor class-wise metrics, not only overall accuracy.
+- Track dataloader throughput because CWT can dominate step time.
+
 ---
 
 ## 7. Flowchart: End-to-End Pipeline
 
 ```mermaid
 flowchart TD
-    A["Raw ECG Data<br/>(MIT-BIH + INCART)"] --> B["Preprocessing<br/>R-Peak Segmentation"]
-    B --> C["Dataset Balancing<br/>(SMOTE/ADASYN)"]
-    C --> D["Train/Val/Test Split"]
-    D --> E["On-the-Fly CWT<br/>Scalogram Generation"]
-    E --> F["Resize 224×224<br/>+ Normalize + 3-Channel"]
-    F --> G["Data Augmentation<br/>(Noise & Scaling)"]
-    G --> H["EfficientNet-B0<br/>Feature Extraction"]
-    H --> I["1×1 Projection<br/>(1280→256)"]
-    I --> J["Flatten + Positional Embed<br/>+ CLS Token"]
-    J --> K["Transformer Encoder<br/>(4 layers × 8 heads)"]
-    K --> L["CLS Token → MLP Classifier"]
-    L --> M["5-Class Prediction<br/>(N, S, V, F, Q)"]
+    A["Raw ECG Data<br/>(MIT-BIH + INCART)"] --> B["R-Peak Segmentation"]
+    B --> C{"balance_after_split?"}
+    C -->|true| D["Split train/val/test first"]
+    C -->|false| E["Load pre-balanced arrays"]
+    D --> F["Apply SMOTE or ADASYN only on train split"]
+    F --> G["On-the-fly CWT to Scalogram"]
+    E --> G
+    G --> H["Resize + Normalize + 3-Channel"]
+    H --> I["AttentionEfficientNet + CBAM"]
+    I --> J["Classifier Head"]
+    J --> K["5-Class Prediction<br/>(N, S, V, F, Q)"]
+    K --> L["Checkpoint Selection + Test Evaluation"]
+    L --> M["Paper 2 XAI<br/>Grad-CAM + CBAM Maps + Channel Attention"]
 ```
 
 ---
@@ -415,6 +428,13 @@ Outputs are written under `experiments/paper2_efficientnet/xai/` and include:
 - `cbam_channel_attention.png` (top channel attention scores)
 - `arrays.npz` and per-sample `summary.json`
 - top-level `summary.json`
+
+### 11.4 Troubleshooting
+
+Common issues and fixes:
+- Missing scalogram artifacts: verify explain script uses Paper 2 config and checkpoint.
+- Slow explanation: reduce explained samples per class.
+- Inconsistent splits: pass `--data.balance_after_split` explicitly.
 
 ## 12. References
 
