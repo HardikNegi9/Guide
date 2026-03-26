@@ -39,21 +39,21 @@ with split policy constraints to avoid leakage when configured with split-first 
 ```mermaid
 flowchart TD
     A[Input Beat Bx1xL] --> B[Stem Conv + Norm + Activation]
-    B --> C[Inception Block 1 [BASE]]
-    C --> D[Inception Block 2 [BASE]]
-    D --> E[Inception Block 3 [BASE]]
-    E --> F[Residual Add 1 [BASE+STABILITY]]
-    F --> G[Inception Block 4 [BASE]]
-    G --> H[Inception Block 5 [BASE]]
-    H --> I[Inception Block 6 [BASE]]
-    I --> J[Residual Add 2 [BASE+STABILITY]]
+    B --> C[Inception Block 1]
+    C --> D[Inception Block 2]
+    D --> E[Inception Block 3]
+    E --> F[Residual Add 1]
+    F --> G[Inception Block 4]
+    G --> H[Inception Block 5]
+    H --> I[Inception Block 6]
+    I --> J[Residual Add 2]
     J --> K[Global Average Pooling]
     K --> L[Dropout]
     L --> M[Linear Head]
     M --> N[Softmax]
 
     subgraph InceptionBlock[Inception Block Internal Structure]
-        X1[1x1 Bottleneck [EFFICIENCY NOVELTY EMPHASIS]]
+        X1[1x1 Bottleneck]
         X2[Conv k=11 branch]
         X3[Conv k=21 branch]
         X4[Conv k=41 branch]
@@ -64,12 +64,38 @@ flowchart TD
         X5 --> X6
         X6 --> X7[BatchNorm + GELU/ReLU]
     end
+
+    style C fill:#e3f2fd
+    style D fill:#e3f2fd
+    style E fill:#e3f2fd
+    style G fill:#e3f2fd
+    style H fill:#e3f2fd
+    style I fill:#e3f2fd
+    style F fill:#f1f8e9
+    style J fill:#f1f8e9
+    style X1 fill:#fff9c4
 ```
 
-Interpretation:
-- [BASE] indicates canonical InceptionTime design principle.
-- [EFFICIENCY NOVELTY EMPHASIS] indicates implementation-critical emphasis for ECG compute-efficiency and large receptive fields.
-- [BASE+STABILITY] denotes residual staging used for robust optimization in deep 1D stacks.
+**Architecture Components:**
+- **Inception Blocks** (light blue): Multi-scale temporal feature extraction with 11/21/41 kernel sizes.
+- **Residual Connections** (light green): Gradient flow stabilization across deep 1D stacks.
+- **Bottleneck Projection** (light yellow): Efficiency novelty for ECG compute optimization.
+
+---
+
+## 3.1 Baseline InceptionTime vs ContextAware Novelty
+
+| Aspect | Base InceptionTime | Context-Aware (This Work) |
+|--------|-------------------|---------------------------|
+| Input dimension | $L$ samples (variable) | $L=216$ R-peak centered |
+| Stem processing | Direct conv | Adaptive context prepend |
+| Block arrangement | 6 Inception blocks | 3-2-1 staggered residual |
+| Bottleneck emphasis | Standard channel mix | **Enhanced for ECG efficiency** |
+| Multi-scale kernels | {9, 19, 39} | **{11, 21, 41}** (ECG-optimized) |
+| Residual integration | Optional | **Mandatory at two stages** |
+| Runtime reference | `inception_time.py` | `models/inception_time.py` |
+
+**Implementation Reference:** See `src/models/inception_time.py` and `configs/paper1_inceptiontime.yaml` in [MODULAR_CODEBASE_README.md](MODULAR_CODEBASE_README.md#project-structure).
 
 ---
 

@@ -1,13 +1,21 @@
-# Paper 3 Study Guide (Monograph Edition): Neuro-Spectral Hybrid Transformer (NSHT) and NSHT-Tri
+# Paper 3 Study Guide (Monograph Edition): NSHT_Dual_Evo
 
 ## 1. Scope
 
-This guide is the publication-depth study companion for Paper 3 in this repository. It is designed to be internally consistent with Papers 1 and 2, and to align with the canonical NSHT architecture reference (NSHT_ARCHITECTURE.md).
+This guide is the publication-depth study companion for Paper 3 in this repository. It documents the **NSHT_Dual_Evo** implementation (`src/models/nsht_dual_evo.py`), which is the active codebase runtime used for all experiments and evaluation.
+
+**NSHT_Dual_Evo** is a learnable dual-stream ECG classifier combining:
+- Adaptive wavelet preprocessing
+- Cross-modal temporal-spectral fusion with attention
+- Prototype consistency regularization
+- Specialized P-wave/low-frequency pathways
+
+*(Optional: See [NSHT_ARCHITECTURE.md](NSHT_ARCHITECTURE.md) for the formal technical monograph. The NSHT-Tri extension is mentioned as optional; this guide focuses on the dual-stream core.)*
 
 It covers:
 
 1. Scientific motivation and claim boundaries.
-2. Formal architecture and objective definitions.
+2. Formal dual-stream architecture definitions.
 3. Runtime-accurate training and explainability workflow.
 4. Ablation, diagnostics, and reproducibility standards.
 
@@ -26,19 +34,21 @@ where:
 - $L=216$ samples per R-peak-aligned beat.
 - Classes $\{0,1,2,3,4\}$ correspond to AAMI types $\{N,S,V,F,Q\}$.
 
-Paper 3 dual-stream model:
+**NSHT_Dual_Evo** (primary implementation) learns a dual-stream mapping:
 
 $$
 f_\theta:\mathbb{R}^{216}\times\mathbb{R}^{H\times W\times3}\rightarrow\Delta^{5}
 $$
 
-NSHT-Tri extension with statistical stream:
+where the first input is the 1D temporal beat signal and the second is a 2D spectral image.
+
+**Optional:** An NSHT-Tri extension adds a statistical feature stream $s\in\mathbb{R}^{d_s}$:
 
 $$
 f^{\mathrm{tri}}_\theta:\mathbb{R}^{216}\times\mathbb{R}^{H\times W\times3}\times\mathbb{R}^{d_s}\rightarrow\Delta^{5}
 $$
 
-where $d_s$ is the statistical feature dimension.
+NSHT-Tri is not active in the current codebase but available for future ablation studies.
 
 ---
 
@@ -51,6 +61,27 @@ Paper 3 focuses on three bottlenecks that persist after strong single-stream bas
 3. CE-only objectives may not enforce robust latent structure.
 
 NSHT addresses these with learnable wavelet preprocessing, cross-modal fusion, and prototype consistency regularization.
+
+---
+
+## 3.1 Standard Hybrid ECG vs NSHT_Dual_Evo Comparison
+
+| Aspect | Conventional Dual-Stream | NSHT_Dual_Evo (Current Implementation) |
+|--------|--------------------------|----------------------------------------|
+| Preprocessing | Fixed/static denoising | **Learnable Morlet wavelet front-end** |
+| 1D temporal encoder | Basic RNN/CNN | **Inception multi-scale with residuals** |
+| 2D spectral encoder | Standard CNN | **CWT scalogram + optimized blocks** |
+| Fusion mechanism | Concatenation | **Cross-modal attention (1D queries 2D)** |
+| Latent structure | CE loss only | **CE + prototype consistency loss** |
+| P-wave specialization | Implicit in shared path | **Explicit low-frequency head** |
+| Training stability | Standard | **BF16 AMP + gradient clipping** |
+| Balancing policy | Often global | **Split-first option (leakage-safe)** |
+| Explainability | Post-hoc only | **Structured XAI (wavelet, attention, stream energy)** |
+| Runtime class | N/A | `src/models/nsht_dual_evo.py` |
+| Config | N/A | `configs/paper3_nsht.yaml` |
+| XAI script | N/A | `scripts/explain_paper3.py` |
+
+**Reference Implementation:** See [MODULAR_CODEBASE_README.md](MODULAR_CODEBASE_README.md#project-structure) for project structure and [NSHT_ARCHITECTURE.md](NSHT_ARCHITECTURE.md) for technical details.
 
 ---
 
@@ -199,21 +230,17 @@ with schedule $\lambda(t)$ typically increased over epochs to avoid early over-c
 
 ---
 
-## 11. NSHT-Tri Extension
+## 11. Optional Tri-Stream Extension (NOT ACTIVE)
 
-Add statistical vector $s\in\mathbb{R}^{d_s}$ projected by MLP:
+**Historical Note:** NSHT-Tri is a tri-stream variant that would add statistical features. It is **not deployed** in the current NSHT_Dual_Evo codebase.
 
-$$
-h_s=\phi_s(s)
-$$
-
-Tri-stream fusion:
+For completeness, if tri-stream were enabled, statistical vector $s\in\mathbb{R}^{d_s}$ would project to $h_s=\phi_s(s)$ and concatenate:
 
 $$
 h_{\mathrm{tri}}=[h_f\,\|\,h_{\mathrm{lf}}\,\|\,h_s]
 $$
 
-This improves boundary handling in subtle morphology cases when engineered descriptors contain complementary cues.
+This would improve boundary handling in subtle morphology cases if engineered descriptors contained complementary cues. **Current implementation uses dual-stream architecture only.**
 
 ---
 
@@ -310,13 +337,16 @@ python scripts/extract_nsht_prototypes.py \
 
 ---
 
-## 15. Novelty Matrix (Manuscript-Ready)
+## 15. Novelty Matrix (Paper 3: NSHT_Dual_Evo)
 
-1. Learnable wavelet front-end replacing fixed denoising.
-2. Temporal-spectral cross-modal attention fusion.
-3. Dedicated low-frequency/P-wave specialization.
-4. Prototype consistency objective for latent structure.
-5. Split-first balancing as methodology integrity enhancement.
+1. **Learnable wavelet front-end** — Adaptive denoising replacing fixed preprocessing.
+2. **Temporal-spectral cross-modal attention** — Dynamic relevance-weighted fusion of 1D and 2D features.
+3. **Explicit P-wave/low-frequency specialization** — Enhanced modeling of subtle atrial patterns for N/S boundaries.
+4. **Prototype consistency objective** — Joint CE + prototype loss for structured latent geometry.
+5. **Split-first balancing policy** — Leakage-safe methodology for robust generalization claims.
+6. **Structured XAI suite** — Wavelet parameter visualization, cross-attention heatmaps, stream contribution metrics.
+
+*(Historical: NSHT-Tri tri-stream variant with statistical features was explored but is not part of current deployment.)*
 6. Structured multi-artifact explainability output.
 
 ---
@@ -474,14 +504,37 @@ Use one expression per display block for stable rendering.
 
 ## 24. Quick Reference Commands
 
-Train/eval commands should follow your project wrappers and config selection policy. For explainability and prototype export, use:
+**Training NSHT_Dual_Evo (Paper 3):**
 
 ```bash
-python scripts/explain_paper3.py --model-path checkpoints/paper3_nsht/best_model.pt --config configs/paper3_nsht.yaml --num-samples-per-class 1
+# Standard training with pre-balanced data
+python scripts/train.py --config configs/paper3_nsht.yaml
+
+# Training with split-first, train-only balancing (leakage-safe)
+python scripts/train.py --config configs/paper3_nsht.yaml --data.balance_after_split
 ```
 
+**Explainability and Prototype Extraction:**
+
 ```bash
-python scripts/extract_nsht_prototypes.py --model-path checkpoints/paper3_nsht/best_model.pt --config configs/paper3_nsht.yaml
+# Generate XAI artifacts (wavelet, attention, stream contributions)
+python scripts/explain_paper3.py \
+  --model-path checkpoints/paper3_nsht/best_model.pt \
+  --config configs/paper3_nsht.yaml \
+  --num-samples-per-class 1
+
+# Extract prototype embeddings and t-SNE
+python scripts/extract_nsht_prototypes.py \
+  --model-path checkpoints/paper3_nsht/best_model.pt \
+  --config configs/paper3_nsht.yaml
 ```
+
+**Code Reference:**
+- Model implementation: `src/models/nsht_dual_evo.py`
+- Configuration template: `configs/paper3_nsht.yaml`
+- Training entrypoint: `scripts/train.py`
+- Evaluation: `scripts/evaluate.py`
+
+See [MODULAR_CODEBASE_README.md](MODULAR_CODEBASE_README.md) for detailed setup and additional options.
 
 This monograph is the canonical heavy study guide for Paper 3 in the current repository state.

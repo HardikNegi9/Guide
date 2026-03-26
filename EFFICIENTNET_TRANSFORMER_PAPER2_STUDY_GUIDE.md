@@ -94,6 +94,27 @@ Practical settings:
 
 ---
 
+## 4.3 EfficientNet-B0 vs AttentionEfficientNet Comparison
+
+| Dimension | Base EfficientNet-B0 | AttentionEfficientNet (Current Runtime) |
+|-----------|---------------------|----------------------------------------|
+| Backbone | MBConv only | MBConv with CBAM attention |
+| Channel Attention | SE blocks only | SE + CBAM channel refinement |
+| Spatial Attention | None | **CBAM spatial attention maps** |
+| Input | 224×224 RGB images | 224×224 CWT scalogram (3-channel replication) |
+| Head design | Global pooling → FC | **Global pooling + CBAM → FC** |
+| Interpretability | Basic feature maps | **Grad-CAM + spatial/channel attention artifacts** |
+| Training stability | Standard AMP | **BF16 mixed precision + TF32** |
+| XAI Runtime | Not applicable | `scripts/explain_paper2.py` |
+| Implementation | torchvision baseline | `src/models/efficientnet_scalogram.py` |
+| Config reference | N/A | `configs/paper2_efficientnet.yaml` |
+
+**Key Novelty:** CBAM attention augmentation replaces the legacy Transformer tokenization path, enabling efficient interpretability through explicit attention maps while maintaining transfer learning benefits.
+
+**Codebase Reference:** See [MODULAR_CODEBASE_README.md](MODULAR_CODEBASE_README.md#project-structure) for runtime details.
+
+---
+
 ## 5. Legacy Architecture Narrative (EfficientNet + Transformer)
 
 This section captures the original conceptual architecture used in previous writeups.
