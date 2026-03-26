@@ -1,108 +1,285 @@
-# InceptionTime Architecture (Paper 1)
+# InceptionTime Architecture (Paper 1) - Extended Technical Specification
 
-## 1. Overview
-This document describes the current Paper 1 architecture used in the repository, including model topology, tensor shapes, runtime training behavior, and explainability workflow.
+## 1. Scope and Purpose
 
-The primary model family is ContextAwareInceptionTime, a 1D multi-branch convolutional architecture designed for ECG beat classification.
+This document is a paper-grade architecture specification for the Paper 1 signal model in this repository. It is written to support:
+
+- Implementation reproducibility.
+- Architecture-level comparison against base InceptionTime.
+- Novelty attribution at block level.
+- Rigorous evaluation and ablation planning.
+- Explainability and clinical interpretation mapping.
+
+The target model family is **ContextAwareInceptionTime** for 5-class AAMI ECG arrhythmia beat classification.
 
 ---
 
-## 2. High-Level Architecture
+## 2. Problem Formulation
+
+Given beat-centered ECG segments $x_i \in \mathbb{R}^{L}$ (with $L=216$ samples per segment) and labels $y_i \in \{0,1,2,3,4\}$, learn a classifier:
+
+$$
+f_\theta: \mathbb{R}^{L} \rightarrow \Delta^{5}
+$$
+
+where $\Delta^5$ is the class probability simplex and classes map to AAMI types $\{N,S,V,F,Q\}$.
+
+Training objective (classification core):
+
+$$
+\theta^{*} = \arg\min_{\theta} \frac{1}{N}\sum_{i=1}^{N} \mathcal{L}_{CE}\big(f_\theta(x_i), y_i\big)
+$$
+
+with split policy constraints to avoid leakage when configured with split-first balancing.
+
+---
+
+## 3. High-Level Architecture (Annotated)
 
 ```mermaid
 flowchart TD
-    A[Input ECG Segment Bx1xL] --> B[Stem Conv/Norm/Activation]
-    B --> C[Inception Block 1]
-    C --> D[Inception Block 2]
-    D --> E[Inception Block 3]
-    E --> F[Residual Add 1]
-    F --> G[Inception Block 4]
-    G --> H[Inception Block 5]
-    H --> I[Inception Block 6]
-    I --> J[Residual Add 2]
+    A[Input Beat Bx1xL] --> B[Stem Conv + Norm + Activation]
+    B --> C[Inception Block 1 [BASE]]
+    C --> D[Inception Block 2 [BASE]]
+    D --> E[Inception Block 3 [BASE]]
+    E --> F[Residual Add 1 [BASE+STABILITY]]
+    F --> G[Inception Block 4 [BASE]]
+    G --> H[Inception Block 5 [BASE]]
+    H --> I[Inception Block 6 [BASE]]
+    I --> J[Residual Add 2 [BASE+STABILITY]]
     J --> K[Global Average Pooling]
     K --> L[Dropout]
-    L --> M[Linear Classifier]
-    M --> N[Softmax 5 Classes]
+    L --> M[Linear Head]
+    M --> N[Softmax]
 
-    subgraph Inception Block
-        B1[1x1 Bottleneck]
-        B2[Conv k=11]
-        B3[Conv k=21]
-        B4[Conv k=41]
-        B5[MaxPool + 1x1 Conv]
-        B2 --> B6[Concat]
-        B3 --> B6
-        B4 --> B6
-        B5 --> B6
-        B6 --> B7[BatchNorm + GELU/ReLU]
+    subgraph InceptionBlock[Inception Block Internal Structure]
+        X1[1x1 Bottleneck [EFFICIENCY NOVELTY EMPHASIS]]
+        X2[Conv k=11 branch]
+        X3[Conv k=21 branch]
+        X4[Conv k=41 branch]
+        X5[MaxPool + 1x1 branch]
+        X2 --> X6[Concat]
+        X3 --> X6
+        X4 --> X6
+        X5 --> X6
+        X6 --> X7[BatchNorm + GELU/ReLU]
     end
 ```
 
+Interpretation:
+- [BASE] indicates canonical InceptionTime design principle.
+- [EFFICIENCY NOVELTY EMPHASIS] indicates implementation-critical emphasis for ECG compute-efficiency and large receptive fields.
+- [BASE+STABILITY] denotes residual staging used for robust optimization in deep 1D stacks.
+
 ---
 
-## 3. Tensor Shape Trace (Typical)
+## 4. Block-by-Block Formal Definition
 
-| Stage | Shape |
-|------|------|
-| Input | B x 1 x 216 |
-| Stem | B x C1 x 216 |
-| Inception stack output | B x C2 x T |
-| Global average pooling | B x C2 |
-| Classifier logits | B x 5 |
+### 4.1 Stem
+Let input be $x \in \mathbb{R}^{B \times C_{in} \times L}$ with $C_{in}=1$.
+Stem transformation:
+
+$$
+x_s = \phi\big(\mathrm{BN}(\mathrm{Conv1D}_{k_s}(x))\big)
+$$
+
+where $\phi$ is GELU/ReLU.
+
+### 4.2 1x1 Bottleneck
+Channel projection before large kernels:
+
+$$
+x_b = \mathrm{Conv1D}_{1}(x_s), \quad x_b \in \mathbb{R}^{B \times C_b \times L}
+$$
+
+Purpose:
+- reduce branch compute,
+- mix channels at each timestep,
+- preserve temporal length.
+
+### 4.3 Multi-Branch Temporal Extraction
+Three temporal branches and one pooled branch:
+
+$$
+z_{11} = \mathrm{Conv1D}_{11}(x_b), \quad
+z_{21} = \mathrm{Conv1D}_{21}(x_b), \quad
+z_{41} = \mathrm{Conv1D}_{41}(x_b)
+$$
+
+$$
+z_{pool} = \mathrm{Conv1D}_{1}(\mathrm{MaxPool}(x_s))
+$$
+
+Concatenation and normalization:
+
+$$
+z = \phi\big(\mathrm{BN}(\mathrm{Concat}(z_{11}, z_{21}, z_{41}, z_{pool}))\big)
+$$
+
+### 4.4 Residual Merge
+For selected block intervals:
+
+$$
+z_{res} = z + \mathcal{P}(x_{skip})
+$$
+
+where $\mathcal{P}$ is optional projection if channel mismatch exists.
+
+### 4.5 Head
+Global temporal pooling and classifier:
+
+$$
+h = \mathrm{GAP}(z_{res}), \quad
+\tilde{h} = \mathrm{Dropout}(h), \quad
+\hat{y} = \mathrm{Softmax}(W\tilde{h}+b)
+$$
+
+---
+
+## 5. Tensor-Shape and Data-Flow Trace
+Typical beat input length in this repository is $L=216$ (config dependent).
+
+| Stage | Symbol | Typical Shape |
+|---|---|---|
+| Input | $x$ | $B \times 1 \times 216$ |
+| Stem | $x_s$ | $B \times C_s \times 216$ |
+| Bottleneck | $x_b$ | $B \times C_b \times 216$ |
+| Inception output | $z$ | $B \times C_z \times T$ |
+| Residual output | $z_{res}$ | $B \times C_z \times T$ |
+| Global pooled | $h$ | $B \times C_z$ |
+| Logits | $o$ | $B \times 5$ |
+| Probabilities | $\hat{y}$ | $B \times 5$ |
 
 Notes:
-- Exact channel counts depend on config variant.
-- Temporal length T is reduced by stride/pooling choices in the implementation.
+- $T$ depends on stride/pooling policy in implementation.
+- Channel widths vary by variant and config.
 
 ---
 
-## 4. Why InceptionTime Works for ECG
+## 6. Receptive Field Perspective
+In ECG, discriminative cues can be short-duration spikes (QRS) and longer morphology context (P/T-wave relationships). Multi-kernel branches provide multi-scale temporal capture:
+- $k=11$ branch: local morphology,
+- $k=21$ branch: meso-scale context,
+- $k=41$ branch: longer rhythm-local structure.
 
-1. Multi-scale kernels capture morphology at different durations.
-2. Residual links stabilize deeper 1D stacks.
-3. Global pooling reduces overfitting to absolute beat position.
-4. Lightweight 1D path enables high-throughput training.
+Effective representation is the fused sum of these scale-specific projections after concatenation and normalization.
 
 ---
 
-## 5. Training Pipeline (Current Runtime)
+## 7. Complexity and Efficiency Analysis
+For one branch with kernel $k$, input channels $C_i$, output channels $C_o$:
+
+Without bottleneck:
+
+$$
+\mathrm{Params}_{no\_bottleneck} \approx C_i C_o k
+$$
+
+With bottleneck width $C_b$:
+
+$$
+\mathrm{Params}_{bottleneck} \approx C_i C_b + C_b C_o k
+$$
+
+When $C_b \ll C_i$, branch compute and memory traffic are significantly reduced while preserving multi-scale coverage.
+
+Practical implication:
+- enables larger kernels,
+- improves throughput on long runs,
+- reduces over-parameterization risk for 1D ECG.
+
+---
+
+## 8. Novelty Map (Marked in Architecture)
+This section explicitly tags novelty points for this repository and paper framing.
+
+### 8.1 Architectural Novelty Emphasis
+1. Bottlenecked multi-scale branches for ECG morphology at multiple durations.
+2. Residual staging for optimization stability under deep stacks and high-epoch schedules.
+
+### 8.2 Methodology Novelty
+1. Split-first balancing gate in runtime pipeline (train-only balancing when enabled).
+2. Unified script-level XAI path attached to final checkpoints.
+
+### 8.3 Operational Novelty
+1. Container-safe training behavior notes.
+2. Reproducible artifact flow from training to evaluation to explanation.
+
+---
+
+## 9. Base InceptionTime vs Your Repository Architecture
+
+| Axis | Base InceptionTime | Your Architecture/Workflow |
+|---|---|---|
+| Core idea | Inception-style 1D multi-scale blocks | Same core, explicitly engineered for ECG workflow reproducibility |
+| Efficiency layer | Bottleneck commonly used | Bottleneck explicitly highlighted and tuned as first-class design concern |
+| Residuals | Canonical deep-stack stabilization | Integrated with practical training controls for long runs |
+| Data policy | Generic split assumptions | Supports split-first balancing for leakage-safe protocol |
+| Explainability | Often post-hoc external | Built-in explain script with consistent artifacts |
+| Experiment outputs | Model metrics | Model metrics plus artifact-rich report workflow |
+
+---
+
+## 10. Training and Evaluation Pipeline (Detailed)
 
 ```mermaid
 flowchart TD
     A[Raw R-peak Segments] --> B{balance_after_split?}
     B -->|true| C[Split train/val/test first]
-    B -->|false| D[Load pre-balanced npy files]
-    C --> E[Apply SMOTE/ADASYN only on train split]
-    E --> F[Build DataLoaders]
+    B -->|false| D[Load pre-balanced arrays]
+    C --> E[Apply SMOTE or ADASYN only on train split]
+    E --> F[Create DataLoaders]
     D --> F
     F --> G[Train ContextAwareInceptionTime]
-    G --> H[Validate and Early Stop]
-    H --> I[Save best checkpoint]
-    I --> J[Evaluate on untouched test split]
+    G --> H[Validate each epoch]
+    H --> I[LR scheduling + early stopping]
+    I --> J[Save best checkpoint]
+    J --> K[Evaluate on untouched test split]
+    K --> L[Generate metrics and plots]
+    L --> M[Run Paper 1 XAI]
 ```
 
-Runtime behavior in this repository:
-- BF16 mixed precision and TF32 are enabled on supported GPUs.
-- Data loading is tuned for container-safe execution.
-- Optional split-first balancing avoids train/test leakage.
+### 10.1 Pipeline Blocks Explained
+1. Raw R-peak segments: beat-level canonical input.
+2. Split policy gate: prevents leakage when split-first is enabled.
+3. Train-only balancing: synthetic augmentation constrained to training partition.
+4. DataLoader assembly: deterministic and efficient batching path.
+5. Training loop: CE optimization with AMP and clipping.
+6. Validation and LR controls: selection under non-monotonic validation behavior.
+7. Best-checkpoint selection: model persistence by validation objective.
+8. Held-out test evaluation: final generalization estimate.
+9. XAI stage: attribution and branch-level interpretability outputs.
 
 ---
 
-## 6. Loss, Optimization, and Metrics
+## 11. Optimization Details and Stability Controls
+- Optimizer: AdamW (config-driven).
+- Precision: AMP with bf16/fp16 policy depending on hardware.
+- Gradient clipping: mitigates occasional unstable steps.
+- Early stopping and LR reduction: handles transient validation spikes.
+- Checkpointing: best validation model loaded for final reporting.
 
-- Primary loss: cross-entropy.
-- Optimizer: AdamW in current configs.
-- Typical controls: scheduler, early stopping, gradient clipping (if enabled), and compile acceleration.
-- Core report metrics: accuracy, macro precision/recall/F1, per-class metrics, confusion matrix.
+Observed behavior pattern (typical for strong-capacity models on balanced data):
+- rapid train convergence,
+- occasional validation spikes,
+- recovery after LR reductions,
+- final low validation loss plateau.
 
 ---
 
-## 7. Explainability Pipeline
+## 12. Failure Modes, Diagnostics, and Mitigations
 
-Paper 1 XAI is generated with script-level explainability and does not require retraining.
+| Failure Mode | Signature | Root Cause Pattern | Mitigation |
+|---|---|---|---|
+| Validation spike bursts | abrupt val loss jumps | transient optimization instability or shift-sensitive batches | retain LR reduction + early-stop policy |
+| Inflated CV scores | near-perfect fold metrics too early | balancing applied on already synthetic data | use split-first + per-fold train-only balancing policy |
+| Data mismatch errors | missing npy path exceptions | mode/balancing path mismatch | align mode, balancing_method, and split policy |
+| Worker/process instability | hanging or stalled loading | aggressive worker settings in constrained runtime | conservative workers + spawn-safe behavior |
 
-Command:
+---
+
+## 13. Explainability and Clinical Traceability
+Paper 1 explainability command:
 
 ```bash
 python scripts/explain_paper1.py \
@@ -111,78 +288,75 @@ python scripts/explain_paper1.py \
     --num-samples-per-class 1
 ```
 
-Optional leakage-safe loading override:
+Optional split-safe loading override:
 
 ```bash
 --data.balance_after_split
 ```
 
-Artifacts in experiments/paper1_inceptiontime/xai/:
-- signal_attributions.png
-- branch_summary.png
-- attributions.npz
-- branch_summary.json
-- per-sample summary.json and global summary.json
+Outputs in experiments/paper1_inceptiontime/xai/ include:
+- signal_attributions.png,
+- branch_summary.png,
+- attributions.npz,
+- branch_summary.json,
+- per-sample and global summary json files.
+
+Clinical interpretation linkage:
+- branch activations highlight scale sensitivity for beat morphology,
+- attribution maps identify sample-level salient temporal segments,
+- summaries support class-level behavior auditing.
 
 ---
 
-## 8. Practical Failure Modes and Mitigations
+## 14. Recommended Ablation Program
+For publication-grade claims, evaluate at least:
+1. No bottleneck vs bottleneck.
+2. Single kernel branch vs multi-branch stack.
+3. No residual vs residual staging.
+4. Pre-balanced-only vs split-first train-only balancing.
+5. No XAI reporting vs standardized XAI artifact workflow.
 
-| Failure Mode | Symptom | Mitigation |
-|---|---|---|
-| Dataset mismatch | missing balanced file errors | use split-first mode or generate required files |
-| Overfitting | large train-test gap | increase regularization, monitor early stopping |
-| Class instability | weak minority-class recall | tune balancing method and class-level diagnostics |
-| Runtime stalls | workers hanging in containers | keep conservative num_workers and spawn-safe loader path |
-
----
-
-## 9. Architecture Blocks Explained
-
-Architecture diagram blocks:
-1. Input ECG Segment: accepts one beat window per sample with shape B x 1 x L.
-2. Stem Conv/Norm/Activation: builds a richer initial channel representation from the raw waveform.
-3. Inception Blocks 1-6: extract features at multiple temporal scales in parallel.
-4. 1x1 Bottleneck: compresses channels before wide kernels to reduce compute.
-5. Conv k=11, k=21, k=41 branches: detect short, medium, and long temporal motifs.
-6. MaxPool + 1x1 branch: adds a pooled context path and keeps branch diversity.
-7. Concat + BatchNorm + GELU/ReLU: merges branch outputs and stabilizes activations.
-8. Residual Add 1 and 2: improve gradient flow in deeper stacks.
-9. Global Average Pooling: converts temporal feature maps into a fixed-length vector.
-10. Dropout: regularizes the classifier input.
-11. Linear Classifier: maps features to 5 class logits.
-12. Softmax: converts logits to class probabilities.
-
-## 10. Training Flowchart Blocks Explained
-
-Training pipeline blocks:
-1. Raw R-peak Segments: beat-level source input.
-2. balance_after_split gate: chooses leakage-safe split-first or legacy pre-balanced path.
-3. Split train/val/test first: creates clean evaluation splits.
-4. Load pre-balanced npy files: legacy path that expects prepared arrays.
-5. Apply SMOTE/ADASYN on train split: balances only training data in split-first mode.
-6. Build DataLoaders: packages tensors for iteration.
-7. Train ContextAwareInceptionTime: optimization loop across epochs.
-8. Validate and Early Stop: monitors generalization and stops when improvement stalls.
-9. Save best checkpoint: persists the best validation model.
-10. Evaluate on test split: computes final held-out metrics.
-
-## 11. Equation Rendering Compatibility
-
-For Markdown preview compatibility, keep equations in multiline display blocks:
-
-$$
-\hat{y} = \mathrm{Softmax}(Wz + b)
-$$
-
-$$
-\mathcal{L}_{\mathrm{CE}} = -\sum_{c=1}^{C} y_c \log(\hat{y}_c)
-$$
-
-Use `\times` in math instead of Unicode multiplication symbols where possible.
+Suggested report table fields:
+- accuracy, macro-F1, per-class recall,
+- calibration proxy (optional),
+- training time and memory,
+- robustness under seed variation.
 
 ---
 
-## 12. Reference
+## 15. Reproducibility Protocol
+Minimum reproducibility bundle:
+1. Config yaml snapshot.
+2. CLI override record.
+3. Seed and environment info.
+4. Best checkpoint hash/path.
+5. Test metrics and confusion matrix.
+6. XAI artifacts from the same checkpoint.
+
+---
+
+## 16. Equation Rendering Compatibility
+For stable Markdown preview rendering:
+- prefer one equation per display block,
+- prefer ascii text outside math blocks,
+- prefer explicit norm notation and avoid mixed unicode symbols in equations.
+
+Examples:
+
+$$
+\hat{y}=\mathrm{Softmax}(Wz+b)
+$$
+
+$$
+\mathcal{L}_{CE}=-\sum_{c=1}^{C} y_c\log(\hat{y}_c)
+$$
+
+$$
+\mathrm{GAP}(x)=\frac{1}{T}\sum_{t=1}^{T}x_t
+$$
+
+---
+
+## 17. References
 - Fawaz et al., InceptionTime: Finding AlexNet for Time Series Classification.
-- Repository config: configs/paper1_inceptiontime.yaml
+- Repository runtime config family: configs/paper1_inceptiontime.yaml.

@@ -149,6 +149,33 @@ Training/selection pipeline blocks:
 7. Test evaluation + confusion matrix: held-out performance report.
 8. Save artifacts: persist model and metrics outputs.
 
+## Novelty Markers in Architecture and Flow
+
+Marked novelty points in the ultimate meta architecture:
+1. Multi-expert probability fusion is the ensemble novelty.
+2. Explicit uncertainty features (std, disagreement, entropy) are confidence-modeling novelty.
+3. Clinical feature injection into meta-space is domain-knowledge novelty.
+4. Hyperparameter search loop (Optuna) is the optimization novelty for meta-level selection.
+
+## Base Stacking Ensemble vs Your Meta Architecture
+
+| Dimension | Standard Stacking Baseline | Your Meta Architecture |
+|---|---|---|
+| Inputs | Base model logits/probabilities | Base probabilities + uncertainty + clinical features |
+| Selection | Fixed meta model/hyperparams | Optuna-based candidate search |
+| Clinical context | Often omitted | Explicit clinical feature branch |
+| Robustness signals | Limited | Mean/std/disagreement/entropy feature set |
+| Reporting | Basic score output | Artifact-oriented pipeline (metrics + confusion outputs) |
+
+## Detailed End-to-End Explanation
+
+1. Specialist model predictions are generated on aligned splits.
+2. Clinical features are aligned with identical sample indices.
+3. Meta-feature vector is built from probabilities, uncertainty, and clinical descriptors.
+4. Candidate meta-models are searched and validated.
+5. Best model is finalized and evaluated on held-out test data.
+6. Final artifacts are exported for reporting and reproducibility.
+
 ## 11. Equation Rendering Compatibility
 
 This guide is mostly architectural and feature-flow oriented. For consistency in Markdown preview, use multiline math blocks when adding equations:

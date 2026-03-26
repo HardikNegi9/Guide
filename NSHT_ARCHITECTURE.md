@@ -1,674 +1,514 @@
+# NSHT Technical Monograph: Neuro-Spectral Hybrid Transformer and NSHT-Tri
 
-# Neuro-Spectral Hybrid Transformer (NSHT) & NSHT-Tri
----
+## 1. Scope and Contribution Framing
 
-## NSHT vs NSHT-Tri: Architectures & Usage Guide
+This document is a paper-grade architecture specification for the repository's Paper 3 family. It formalizes:
 
-### NSHT (ecg_nsht_model.py)
-**Description:**
-- Dual-stream model combining a learnable wavelet front-end, 1D temporal encoder, 2D spectral encoder, and cross-modal attention fusion.
-- Designed for high-accuracy ECG arrhythmia classification using both time and frequency domain features.
+1. NSHT dual-stream architecture (`NSHT_Dual_Evo` runtime path).
+2. NSHT-Tri extension (statistical feature stream fusion).
+3. Training, balancing, explainability, and reproducibility protocol.
 
-**How to Use:**
-1. Prepare your data (e.g., X_balanced.npy, y_balanced.npy in balanced_data/).
-2. Run ecg_nsht_model.py to train or evaluate the model:
-    ```bash
-    python ecg_nsht_model.py
-    ```
-3. Model weights and results will be saved in the models/ directory (e.g., nsht_best.pth).
-4. For inference, load the model and use the provided predict/evaluate functions.
-
-**Key Features:**
-- Learnable Morlet wavelet denoising
-- 1D Inception encoder (temporal)
-- 2D CNN encoder (spectral)
-- Cross-modal attention fusion
-- Prototype consistency loss
+The focus is to ensure method claims are scientifically precise, implementation-accurate, and publication-ready.
 
 ---
 
-### NSHT-Tri (ecg_nsht_tri.py)
-**Description:**
-- Extension of NSHT with a third branch for direct statistical feature injection (e.g., skewness, kurtosis, entropy).
-- Fuses neural and mathematical features for improved discrimination, especially for subtle class differences.
+## 2. Problem Setup and Mathematical Notation
 
-**How to Use:**
-1. Prepare your data (as above).
-2. Run ecg_nsht_tri.py to train or evaluate the tri-stream model:
-    ```bash
-    python ecg_nsht_tri.py
-    ```
-3. Model weights and results will be saved in the models/ directory (e.g., nsht_tri_best.pth).
-4. For inference, load the model and use the provided predict/evaluate functions.
+Define heartbeat dataset:
 
-**Key Features:**
-- All NSHT features, plus:
-  - Statistical feature extractor (20+ features per beat)
-  - MLP projector for stats
-  - Late fusion of neural and statistical features
+$$
+\mathcal{D}=\{(x_i,y_i)\}_{i=1}^{N},\quad x_i\in\mathbb{R}^{L},\ y_i\in\{0,1,2,3,4\}
+$$
 
----
+where:
 
-## When to Use Which?
-- Use **NSHT** for standard dual-stream neuro-spectral modeling.
-- Use **NSHT-Tri** if you want to inject domain knowledge/statistics for potentially higher accuracy, especially on challenging class boundaries (e.g., N vs S).
+- $L=216$ samples per R-peak segment.
+- Classes $\{0,1,2,3,4\}$ correspond to AAMI types $\{N,S,V,F,Q\}$.
 
----
+NSHT dual-stream model learns:
 
-## A Novel End-to-End Architecture for ECG Arrhythmia Classification
+$$
+f_\theta: \mathbb{R}^{216}\times\mathbb{R}^{H\times W\times3}\rightarrow\Delta^{5}
+$$
+
+where the second input is a spectral image representation of the same beat.
+
+NSHT-Tri extension adds statistical feature vector $s_i\in\mathbb{R}^{d_s}$:
+
+$$
+f^{\mathrm{tri}}_\theta: \mathbb{R}^{216}\times\mathbb{R}^{H\times W\times3}\times\mathbb{R}^{d_s}\rightarrow\Delta^{5}
+$$
 
 ---
 
-## 📋 Table of Contents
+## 3. Why NSHT Exists
 
-1. [Executive Summary](#executive-summary)
-2. [Problem Statement & Motivation](#problem-statement--motivation)
-3. [Literature Review & Pain Points](#literature-review--pain-points)
-4. [Architecture Overview](#architecture-overview)
-5. [Technical Components](#technical-components)
-6. [Implementation Details](#implementation-details)
-7. [Experimental Results](#experimental-results)
-8. [Ablation Study Design](#ablation-study-design)
-9. [Comparison with State-of-the-Art](#comparison-with-state-of-the-art)
-10. [Future Improvements](#future-improvements)
-11. [Conclusion](#conclusion)
+Paper 3 addresses three bottlenecks in prior ECG systems:
 
----
+1. Fixed preprocessing limits adaptation to noise/domain changes.
+2. Unimodal encoders fail to jointly reason over time morphology and spectral texture.
+3. CE-only objectives can under-structure latent class geometry.
 
-## 1. Executive Summary
+NSHT targets these with:
 
-**NSHT (Neuro-Spectral Hybrid Transformer)** is a novel deep learning architecture designed for ECG arrhythmia classification that addresses three fundamental limitations in current approaches:
-
-| Problem | Our Solution |
-|---------|--------------|
-| Static denoising (fixed wavelets) | **Learnable Wavelet Front-End** |
-| Unimodal blindness (1D OR 2D only) | **Cross-Modal Attention Fusion** |
-| Lack of structural constraints | **Prototype Consistency Loss** |
-
-### Key Results
-
-| Metric | Value |
-|--------|-------|
-| **Test Accuracy** | 98.80% |
-| **Best Validation Accuracy** | 99.18% |
-| **Parameters** | 706,821 (~0.7M) |
-| **Training Time** | ~25 minutes (50 epochs) |
-| **Hardware** | RTX 3050 4GB VRAM |
+1. Learnable wavelet front-end.
+2. Cross-modal temporal-spectral fusion.
+3. Prototype-consistency regularization.
 
 ---
 
-## 2. Problem Statement & Motivation
+## 4. High-Level Architecture
 
-### Clinical Need
+### 4.1 NSHT (Dual Stream)
 
-Electrocardiogram (ECG) analysis is critical for diagnosing cardiac arrhythmias. Manual interpretation by cardiologists is:
-- **Time-consuming**: A 24-hour Holter monitor can contain 100,000+ heartbeats
-- **Error-prone**: Inter-observer variability of 10-20%
-- **Inaccessible**: Shortage of trained cardiologists globally
+Input beat drives two synchronized representations:
 
-### Technical Challenge
+1. Temporal branch: learnable-wavelet-enhanced 1D encoder.
+2. Spectral branch: 2D encoder over time-frequency transform.
 
-The "99.5% barrier" in ECG classification is caused by:
+Fusion module aligns both branches into a shared latent vector for classification.
 
-1. **Normal vs. Supraventricular (N↔S) confusion**: Differ only by subtle P-wave timing
-2. **Ventricular vs. Fusion (V↔F) confusion**: Both involve ventricular activation
-3. **Patient variability**: Normal beats vary significantly between individuals
+### 4.2 NSHT-Tri (Tri Stream)
 
-### Our Goal
-
-Design an architecture that:
-- ✅ Learns optimal denoising parameters end-to-end
-- ✅ Combines temporal (1D) and spectral (2D) information
-- ✅ Enforces meaningful latent space structure
-- ✅ Runs on consumer hardware (4GB VRAM)
+Adds a third branch with explicit handcrafted/clinical-statistical descriptors projected by MLP before late fusion.
 
 ---
 
-## 3. Literature Review & Pain Points
+## 5. Learnable Wavelet Front-End
 
-### Current State-of-the-Art Methods
+### 5.1 Parametric Morlet Kernel
 
-| Paper | Method | Accuracy | Limitation |
-|-------|--------|----------|------------|
-| FG-HSWIN-CFA (2024) | Swin Transformer + Frequency Grouping | 98.96% | Fixed frequency bands |
-| DWTFrTV-DEAL (2024) | Wavelet + Total Variation Denoising | 99.7% | Non-differentiable denoising |
-| InceptionTime (2020) | 1D CNN Ensemble | 98.88% | Ignores frequency domain |
-| EfficientNet-B0 | 2D CNN on Scalograms | 97.91% | Loses temporal precision |
+A simplified learnable real-valued Morlet-style atom:
 
-### Critical Pain Points Identified
+$$
+\psi(t;\sigma,\omega_0)=\exp\!\left(-\frac{t^2}{2\sigma^2}\right)\cos\!\left(\omega_0\frac{t}{\sigma}\right)
+$$
 
-#### Pain Point 1: Static Denoising (QAWT/DWT)
+Each filter has trainable $(\sigma,\omega_0)$ parameters.
 
-**Problem**: Papers use fixed wavelet transforms (Morlet, db4) with hand-tuned thresholds.
+### 5.2 Filter-Bank Convolution
 
-```
-Traditional Pipeline:
-Raw ECG → Fixed Wavelet → Hard Threshold → Denoised → CNN
-           ↑                    ↑
-           Not learnable        Not learnable
-```
+For input signal $x$ and filter bank $\{\psi_k\}_{k=1}^{K}$:
 
-**Consequence**: If noise characteristics change (different ECG device, patient movement), the fixed denoising fails.
+$$
+z_k = x * \psi_k
+$$
 
-**Our Solution**: Learnable Morlet Wavelets with trainable scale (σ) and frequency (f₀) parameters.
+$$
+Z=[z_1,\dots,z_K]\in\mathbb{R}^{K\times L}
+$$
 
----
+This creates adaptive denoising and frequency-selective responses learned end-to-end.
 
-#### Pain Point 2: Unimodal Blindness
+### 5.3 Practical Benefit
 
-**Problem**: Most methods use EITHER 1D signals OR 2D scalograms, not both.
-
-| Approach | Strength | Weakness |
-|----------|----------|----------|
-| 1D CNN | Precise R-peak timing | Misses frequency patterns |
-| 2D CNN | Rich spectral features | Blurs temporal location |
-
-**Consequence**: The model cannot simultaneously know "when" (1D) and "what frequency" (2D) an event occurred.
-
-**Our Solution**: Cross-Modal Attention Fusion where 1D features query 2D features.
+Compared to fixed wavelet transforms, this front-end can retune to dataset-specific morphology and noise profiles during optimization.
 
 ---
 
-#### Pain Point 3: Lack of Latent Structure
+## 6. Temporal Encoder (1D Stream)
 
-**Problem**: Standard cross-entropy loss doesn't enforce any structure in the latent space.
+The temporal stream uses multi-scale 1D feature extraction blocks (Inception-like variants in the model family) to preserve timing-sensitive morphology:
 
-**Consequence**: 
-- Clusters overlap in feature space
-- Model relies on arbitrary decision boundaries
-- Poor interpretability
+- QRS width and slope dynamics.
+- P-wave and PR-pattern cues.
+- Beat-level phase relationships around R-peak anchors.
 
-**Our Solution**: Prototype Consistency Loss with learnable class centroids.
+Output sequence feature map:
 
----
-
-## 4. Architecture Overview
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    NSHT Architecture                                 │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  Raw ECG (1, 216)                                                   │
-│       │                                                              │
-│       ├──────────────────────┐                                      │
-│       ↓                      ↓                                      │
-│  ┌─────────────┐      ┌─────────────┐                               │
-│  │ Learnable   │      │  P-Wave     │                               │
-│  │ Wavelet     │      │  Head       │                               │
-│  │ (32 filters)│      │ (Low-freq)  │                               │
-│  └──────┬──────┘      └──────┬──────┘                               │
-│         │                    │                                       │
-│         ↓                    │                                       │
-│  ┌─────────────┐            │                                       │
-│  │ 1D Encoder  │            │                                       │
-│  │ (Inception) │            │                                       │
-│  └──────┬──────┘            │                                       │
-│         │                    │                                       │
-│         │    ┌───────────────┼───────────────┐                      │
-│         │    │               │               │                      │
-│         │    │  Scalogram (3, 128, 128)      │                      │
-│         │    │         │                     │                      │
-│         │    │         ↓                     │                      │
-│         │    │  ┌─────────────┐              │                      │
-│         │    │  │ 2D Encoder  │──→ Low-Freq  │                      │
-│         │    │  │ (CNN)       │    Features  │                      │
-│         │    │  └──────┬──────┘              │                      │
-│         │    │         │                     │                      │
-│         ↓    ↓         ↓                     ↓                      │
-│  ┌───────────────────────────────────────────────┐                  │
-│  │         Cross-Modal Attention Fusion          │                  │
-│  │    (1D queries 2D for spectral context)       │                  │
-│  └───────────────────────┬───────────────────────┘                  │
-│                          │                                          │
-│                          ↓                                          │
-│                   ┌─────────────┐                                   │
-│                   │ Global Pool │                                   │
-│                   │ + Concat    │                                   │
-│                   └──────┬──────┘                                   │
-│                          │                                          │
-│                          ↓                                          │
-│                   ┌─────────────┐                                   │
-│                   │ Classifier  │ ←── Prototype Loss (λ)            │
-│                   │ (5 classes) │                                   │
-│                   └─────────────┘                                   │
-│                                                                      │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-### 4.1 Detailed Mermaid Architecture
-
-```mermaid
-flowchart TD
-    A[ECG Segment Bx1x216] --> B[Learnable Morlet Wavelet Front-End]
-    A --> C[P-Wave Specialized Head]
-    A --> D[CWT Scalogram Generator]
-
-    B --> E[1D Inception Encoder]
-    D --> F[2D CNN Spectral Encoder]
-    D --> G[Low-Frequency Spectral Head]
-
-    E --> H[Cross-Modal Attention Fusion]
-    F --> H
-
-    H --> I[Temporal-Spectral Fused Features]
-    I --> J[Global Average Pooling]
-    J --> K[Concat Fused + P-Wave + Low-Freq]
-    C --> K
-    G --> K
-
-    K --> L[Classifier MLP]
-    L --> M[5-Class Logits]
-    M --> N[Softmax Predictions]
-
-    K -.-> O[Prototype Head]
-    O -.-> P[Prototype Consistency Loss]
-    M -.-> Q[Cross-Entropy Loss]
-    P -.-> R[Total Loss]
-    Q -.-> R
-```
-
-### 4.2 Runtime Pipeline (Split-First and XAI)
-
-```mermaid
-flowchart TD
-    A[Raw R-peak Segments] --> B{balance_after_split?}
-    B -->|true| C[Split train/val/test first]
-    B -->|false| D[Load pre-balanced arrays]
-    C --> E[Balance only train split via SMOTE/ADASYN]
-    E --> F[Build NSHT DataLoaders]
-    D --> F
-    F --> G[Train NSHT_Dual_Evo]
-    G --> H[Save best checkpoint]
-    H --> I[Run test evaluation]
-    I --> J[Run Paper 3 XAI scripts]
-    J --> K[Wavelet + attention + stream + prototype artifacts]
-```
+$$
+T\in\mathbb{R}^{B\times C_t\times L_t}
+$$
 
 ---
 
-## 5. Technical Components
+## 7. Spectral Encoder (2D Stream)
 
-### 5.1 Learnable Morlet Wavelet Front-End
+### 7.1 Spectral Representation
 
-**Mathematical Formulation**:
+A beat-derived time-frequency image is generated (scalogram/spectral map path depending on configured implementation), then passed through a compact 2D CNN stack:
 
-The Morlet wavelet is defined as:
-$$\psi(t) = e^{-\frac{t^2}{2\sigma^2}} \cos(2\pi f_0 \cdot \frac{t}{\sigma})$$
+$$
+S\in\mathbb{R}^{B\times C_s\times H_s\times W_s}
+$$
 
-Where:
-- $\sigma$ = scale (controls envelope width)
-- $f_0$ = center frequency
+Flattened or pooled spectral tokens/features become key-value context for fusion.
 
-**Innovation**: Both σ and f₀ are **learnable parameters** optimized via backpropagation.
+### 7.2 Low-Frequency Emphasis Hooks
 
-```python
-class LearnableMorletWavelet(nn.Module):
-    def __init__(self, out_channels=32, kernel_size=31):
-        # Initialize with log-spaced scales (warm start)
-        self.scale = nn.Parameter(torch.logspace(0, 2, out_channels) * 0.5)
-        self.freq = nn.Parameter(torch.linspace(0.5, 10.0, out_channels))
-```
-
-**Why This Matters**:
-- Adapts to dataset-specific noise profiles
-- Learns frequency bands most discriminative for each class
-- Replaces hand-tuned wavelet selection
+The architecture family includes dedicated low-frequency feature capture pathways to preserve atrial and slow-wave morphology signals linked to difficult class boundaries.
 
 ---
 
-### 5.2 P-Wave Specialized Head
+## 8. P-Wave and Low-Frequency Specialized Heads
 
-**Motivation**: The P-wave (0.5-5 Hz) is critical for N vs. S discrimination but easily lost in noise.
+Dedicated low-frequency modules are included to improve discrimination in classes where subtle atrial timing and morphology differ (especially N/S boundaries).
 
-**Implementation**:
-- Large kernels (41, 21) to capture slow P-wave morphology
-- Separate processing path from main encoder
-- Concatenated to final features
+A generic specialized convolutional head can be represented as:
 
-```python
-class PWaveHead(nn.Module):
-    def __init__(self, in_channels, out_channels=32):
-        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size=41, padding=20)
-        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size=21, padding=10)
-```
+$$
+P=\phi_{\mathrm{pw}}(x),\quad P\in\mathbb{R}^{B\times C_p\times L_p}
+$$
+
+and injected into final fusion vector after pooling/projection.
 
 ---
 
-### 5.3 Cross-Modal Attention Fusion
+## 9. Cross-Modal Attention Fusion
 
-**Concept**: Each 1D temporal position queries all 2D spectral positions to find relevant frequency information.
+### 9.1 Core Operation
 
-$$\text{Attention}(Q_{1D}, K_{2D}, V_{2D}) = \text{softmax}\left(\frac{Q_{1D} K_{2D}^T}{\sqrt{d_k}}\right) V_{2D}$$
+Let temporal features be query source and spectral features be key/value source:
 
-**Why Not Simple Concatenation?**
-- Concatenation treats all features equally
-- Attention learns which 2D regions are relevant for each 1D timestep
-- More parameter-efficient than fully-connected fusion
+$$
+Q=W_Q T,\ K=W_K S',\ V=W_V S'
+$$
 
----
+$$
+A=\mathrm{softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}}\right)
+$$
 
-### 5.4 Prototype Consistency Loss
+$$
+F_{\mathrm{cm}}=AV
+$$
 
-**Concept**: Each class has a learnable centroid (prototype) in feature space.
+where $S'$ is reshaped spectral context.
 
-$$\mathcal{L}_{proto} = \frac{1}{N}\sum_{i=1}^{N} \|f_i - p_{y_i}\|^2$$
+### 9.2 Why Attention Instead of Concatenation
 
-Where:
-- $f_i$ = feature embedding of sample i
-- $p_{y_i}$ = prototype of class $y_i$
-
-**Dynamic λ Schedule**:
-```python
-lambda_schedule = np.linspace(0.01, 0.1, epochs)
-# Start small (let model learn features first)
-# Gradually increase (enforce clustering)
-```
+1. Dynamic relevance weighting per temporal position.
+2. Better alignment of morphology events with spectral signatures.
+3. Greater interpretability via attention maps.
 
 ---
 
-## 6. Implementation Details
+## 10. Prototype Consistency Objective
 
-### Training Configuration
+### 10.1 Prototype Definition
 
-| Parameter | Value | Rationale |
-|-----------|-------|-----------|
-| Batch Size | 8 | Memory constraint (4GB VRAM) |
-| Gradient Accumulation | 4 | Effective batch = 32 |
-| Learning Rate | 1e-3 | Standard for AdamW |
-| Optimizer | AdamW | Weight decay for regularization |
-| Scheduler | CosineAnnealing | Smooth LR decay |
-| Mixed Precision | FP16 | 2x memory savings |
-| Label Smoothing | 0.1 | Prevent overconfidence |
+Each class $c$ has learnable prototype $p_c\in\mathbb{R}^{d}$.
 
-### Memory Optimization
+For sample embedding $h_i$ with label $y_i$:
 
-```python
-# Mixed precision training
-with autocast():
-    logits, proto_loss = model(x1d, x2d, targets)
-    loss = ce_loss + lambda_proto * proto_loss
+$$
+\mathcal{L}_{\mathrm{proto}}=\frac{1}{N}\sum_{i=1}^{N}\|h_i-p_{y_i}\|_2^2
+$$
 
-# Gradient accumulation
-loss = loss / accumulation_steps
-scaler.scale(loss).backward()
+### 10.2 Joint Loss
 
-if (batch_idx + 1) % accumulation_steps == 0:
-    scaler.step(optimizer)
-```
+$$
+\mathcal{L}_{\mathrm{total}}=\mathcal{L}_{\mathrm{CE}}+\lambda\mathcal{L}_{\mathrm{proto}}
+$$
+
+with schedule $\lambda(t)$ typically increasing through training to avoid early over-constraining.
+
+### 10.3 Effect
+
+- Tightens intra-class compactness.
+- Improves latent-space interpretability.
+- Supports prototype-space visualization and diagnostics.
 
 ---
 
-## 7. Experimental Results
+## 11. NSHT-Tri Statistical Stream
 
-### Training Progression
+NSHT-Tri adds handcrafted/statistical descriptors (for example moments, entropy-family, and rhythm descriptors depending on feature generator).
 
-| Epoch | Train Acc | Val Acc | λ |
-|-------|-----------|---------|---|
-| 1 | 85.90% | 93.40% | 0.010 |
-| 10 | 97.65% | 97.86% | 0.027 |
-| 20 | 99.17% | 98.71% | 0.045 |
-| 30 | 99.71% | 98.95% | 0.063 |
-| 40 | 99.94% | 99.08% | 0.082 |
-| 50 | 99.99% | 99.13% | 0.100 |
+Let stats vector be $s\in\mathbb{R}^{d_s}$ projected to latent dimension $d$:
 
-**Best Validation**: 99.18% (Epoch 42)
-**Final Test**: 98.80%
+$$
+h_s = \phi_s(s)\in\mathbb{R}^{d}
+$$
 
-### Per-Class Performance
+Final tri-stream fusion:
 
-| Class | Precision | Recall | F1-Score | Support |
-|-------|-----------|--------|----------|---------|
-| **N** (Normal) | 97.92% | 98.00% | 97.96% | 1,200 |
-| **S** (Supraventricular) | 98.34% | 98.75% | 98.54% | 1,200 |
-| **V** (Ventricular) | 98.99% | 97.92% | 98.45% | 1,200 |
-| **F** (Fusion) | 99.01% | 99.67% | 99.34% | 1,200 |
-| **Q** (Unknown/Paced) | 99.75% | 99.67% | 99.71% | 1,200 |
+$$
+h_{\mathrm{tri}}=[h_{\mathrm{cm}}\,\|\,h_{\mathrm{pw}}\,\|\,h_s]
+$$
 
-### Confusion Matrix
-
-```
-Predicted →     N       S       V       F       Q
-Actual ↓
-    N        1176     14       5       3       2
-    S          14   1185       0       1       0
-    V          10      6    1175       8       1
-    F           1      0       3    1196       0
-    Q           0      0       4       0    1196
-```
-
-### Key Observations
-
-1. **N↔S Confusion Reduced**: 14+14=28 errors (vs. 22+10=32 in InceptionTime)
-2. **V↔F Confusion**: 8+3=11 errors (still a challenge)
-3. **Q Class Nearly Perfect**: 99.67% recall
+This is then fed to classification head and optional prototype objective.
 
 ---
 
-## 8. Ablation Study Design
+## 12. Shape Trace and Branch Interfaces
 
-To validate each component, the following experiments should be run:
+Representative flow (batch size $B$):
 
-### Experiment 1: Without Learnable Wavelets
+1. Raw beat: $B\times1\times216$.
+2. Wavelet front-end output: $B\times K\times216$.
+3. Temporal encoded map: $B\times C_t\times L_t$.
+4. Spectral encoded map: $B\times C_s\times H_s\times W_s$.
+5. Cross-modal fused representation: $B\times d$.
+6. Optional P-wave/low-frequency vector: $B\times d_p$.
+7. Optional stats vector (tri): $B\times d_s'$.
+8. Logits: $B\times5$.
 
-Replace `LearnableMorletWavelet` with fixed Morlet CWT.
-
-**Expected Result**: ~1% accuracy drop (unable to adapt denoising)
-
-### Experiment 2: Without Cross-Modal Attention
-
-Replace attention fusion with simple concatenation.
-
-**Expected Result**: ~0.5% accuracy drop (loses dynamic feature alignment)
-
-### Experiment 3: Without Prototype Loss
-
-Set λ = 0 (standard cross-entropy only).
-
-**Expected Result**: ~0.3% accuracy drop (weaker class separation)
-
-### Experiment 4: Without P-Wave Head
-
-Remove specialized low-frequency processing.
-
-**Expected Result**: Increased N↔S confusion
+All branch projections must be dimensionally aligned before concatenation/attention.
 
 ---
 
-## 9. Comparison with State-of-the-Art
+## 13. Training Protocol and Data Integrity
 
-| Method | Type | Accuracy | Parameters | Trainable Denoising |
-|--------|------|----------|------------|---------------------|
-| DWTFrTV-DEAL | Wavelet + ML | 99.7% | N/A | ❌ No |
-| FG-HSWIN-CFA | Swin Transformer | 98.96% | ~25M | ❌ No |
-| InceptionTime Ensemble | 1D CNN | 98.88% | ~8.5M | ❌ No |
-| Multi-Meta-Learner | Stacking | 99.17% | ~15M | ❌ No |
-| **NSHT (Ours)** | Hybrid Transformer | 98.80% | **0.7M** | ✅ **Yes** |
+### 13.1 Split-First Balancing Policy
 
-### Advantages of NSHT
+The repository supports leakage-safe strategy:
 
-1. **Smallest Model**: Only 706K parameters (10-30x smaller than alternatives)
-2. **End-to-End Learnable**: No hand-tuned preprocessing
-3. **Interpretable**: Prototype loss creates meaningful clusters
-4. **Hardware Efficient**: Runs on 4GB VRAM
+1. Split train/val/test first.
+2. Apply SMOTE/ADASYN only on training split if enabled.
+3. Keep validation/test untouched.
 
-### Current Limitations
+This should be the default for claims of generalization validity.
 
-1. **Accuracy Gap**: 0.37% below Multi-Meta-Learner
-2. **Scalogram Overhead**: 2D path adds preprocessing time
-3. **Generalization**: Not yet tested on other ECG databases
+### 13.2 Optimization Components
 
----
+Common Paper 3 runtime ingredients:
 
-## 10. Future Improvements
+- AdamW or equivalent adaptive optimizer.
+- AMP mixed precision where supported.
+- Early stopping and LR scheduling.
+- Gradient clipping/accumulation depending on memory budget.
 
-### Immediate (Can Improve to 99%+)
+### 13.3 Evaluation
 
-| Improvement | Expected Gain | Complexity |
-|-------------|---------------|------------|
-| Longer training (100 epochs) | +0.2-0.3% | Low |
-| Larger embedding (256) | +0.1-0.2% | Medium |
-| More attention heads (8) | +0.1% | Low |
-| Focal Loss for N class | +0.1-0.2% | Low |
+Always report:
 
-### Medium-Term (Publication Ready)
-
-1. **Inter-Patient Split Validation**: Ensure no data leakage
-2. **10-Fold Cross-Validation**: Robust performance estimate
-3. **Noise Robustness Test**: Inject SNR 10dB noise
-4. **T-SNE Visualization**: Show prototype clustering
-
-### Long-Term (Beyond SOTA)
-
-1. **Swin Transformer Backbone**: Replace 2D encoder
-2. **Contrastive Prototype Loss**: Pull same class, push different class
-3. **Multi-Task Learning**: Predict both arrhythmia and patient ID
-4. **Self-Supervised Pre-training**: Use unlabeled ECG data
+- Overall accuracy.
+- Macro F1 and per-class precision/recall/F1.
+- Confusion matrix.
+- Optional prototype-space diagnostics.
 
 ---
 
-## 11. Conclusion
+## 14. Complexity, Throughput, and Memory
 
-### Summary
+### 14.1 Time Complexity Drivers
 
-The **Neuro-Spectral Hybrid Transformer (NSHT)** introduces three novel components:
+Total cost combines three terms:
 
-1. **Learnable Wavelet Front-End**: Replaces fixed denoising with trainable filters
-2. **Cross-Modal Attention Fusion**: Combines 1D temporal and 2D spectral features dynamically
-3. **Prototype Consistency Loss**: Enforces meaningful latent space structure
+$$
+\mathcal{C}_{\mathrm{total}}\approx \mathcal{C}_{1D}+\mathcal{C}_{2D}+\mathcal{C}_{\mathrm{fusion}}
+$$
 
-### Results
+with attention term scaling approximately with sequence/context lengths.
 
-- **98.80% accuracy** on MIT-BIH with only **706K parameters**
-- **99.18% validation accuracy** demonstrates learning capacity
-- All components are differentiable and end-to-end trainable
+### 14.2 Parameter Efficiency
 
-### Scientific Contribution
+NSHT family remains relatively compact for a multi-branch system while adding interpretability hooks unavailable in many single-stream baselines.
 
-This architecture represents a **paradigm shift** from:
-```
-Fixed Preprocessing → Feature Extraction → Classification
-```
-To:
-```
-Learnable Preprocessing ↔ Feature Extraction ↔ Classification
-              ↑                    ↑                 ↑
-              All jointly optimized via backpropagation
-```
+### 14.3 Practical Runtime Notes
 
-### Publication Potential
-
-With the planned ablation studies and inter-patient validation, NSHT could be submitted to:
-- IEEE Transactions on Biomedical Engineering
-- Computers in Biology and Medicine
-- Medical Image Analysis
+- Spectral path can dominate memory if resolution is high.
+- Mixed precision significantly improves feasibility on constrained GPUs.
+- Branch-level profiling is recommended to detect bottlenecks.
 
 ---
 
-## 12. Current Repository XAI Workflow (March 2026)
+## 15. Novelty Matrix
 
-The active NSHT explainability path is implemented in `scripts/explain_paper3.py` for `NSHT_Dual_Evo` checkpoints.
+Explicit novelty points for manuscript use:
 
-Run:
+1. Learnable wavelet denoising front-end.
+2. Temporal-spectral cross-modal attention fusion.
+3. Dedicated low-frequency/P-wave enhancement pathways.
+4. Prototype-consistency regularization in latent space.
+5. Leakage-safe split-first balancing support.
+6. Multi-view Paper 3 XAI artifact suite.
+
+---
+
+## 16. Baseline Hybrid vs NSHT vs NSHT-Tri
+
+| Dimension | Conventional Hybrid | NSHT (Dual) | NSHT-Tri |
+|---|---|---|---|
+| Denoising | Fixed preprocessing | Learnable wavelet front-end | Learnable wavelet front-end |
+| Modal branches | Often 1D or 2D dominant | Joint 1D + 2D with attention fusion | 1D + 2D + stats stream |
+| Low-frequency specialization | Usually implicit | Explicit pathways | Explicit pathways |
+| Latent structuring | CE only | CE + prototype consistency | CE + prototype consistency |
+| Statistical domain priors | Rare | Optional external | Native third-stream integration |
+| Explainability | Usually single-view | Multi-artifact | Multi-artifact + stats context |
+
+---
+
+## 17. Explainability and Artifact Protocol
+
+Active script:
+
+- `scripts/explain_paper3.py`
+
+Command:
 
 ```bash
 python scripts/explain_paper3.py \
-    --model-path checkpoints/paper3_nsht/best_model.pt \
-    --config configs/paper3_nsht.yaml \
-    --num-samples-per-class 1
+  --model-path checkpoints/paper3_nsht/best_model.pt \
+  --config configs/paper3_nsht.yaml \
+  --num-samples-per-class 1
 ```
 
-Optional leakage-safe override:
+Optional split-first override:
 
 ```bash
 python scripts/explain_paper3.py \
-    --model-path checkpoints/paper3_nsht/best_model.pt \
-    --config configs/paper3_nsht.yaml \
-    --data.balance_after_split
+  --model-path checkpoints/paper3_nsht/best_model.pt \
+  --config configs/paper3_nsht.yaml \
+  --num-samples-per-class 1 \
+  --data.balance_after_split
 ```
 
-Main artifacts under `experiments/paper3_nsht/xai/`:
-- `wavelet_params.png` (learned sigma, omega0, and wavelet scales)
-- `cross_attention.png` (cross-modal attention heatmap per sample)
-- `stream_contributions.png` (temporal vs spectral stream energy)
-- `arrays.npz` plus per-sample and global `summary.json`
-- optional `prototype_tsne.png` when prototype mode is enabled
+Typical artifact set under `experiments/paper3_nsht/xai/`:
 
-For explicit prototype extraction and t-SNE export, run:
+- `wavelet_params.png`.
+- `cross_attention.png`.
+- `stream_contributions.png`.
+- `arrays.npz`.
+- per-sample and global `summary.json`.
+- optional prototype visualization exports.
+
+Prototype extraction utility:
 
 ```bash
 python scripts/extract_nsht_prototypes.py \
-    --model-path checkpoints/paper3_nsht/best_model.pt \
-    --config configs/paper3_nsht.yaml
+  --model-path checkpoints/paper3_nsht/best_model.pt \
+  --config configs/paper3_nsht.yaml
 ```
 
 ---
 
-## 13. Architecture Blocks Explained
+## 18. Failure Modes and Diagnostic Strategy
 
-Architecture blocks in the detailed diagram:
-1. ECG Segment Input: heartbeat-level 1D waveform tensor.
-2. Learnable Morlet Front-End: trainable denoising and frequency filtering.
-3. P-Wave Specialized Head: low-frequency morphology emphasis.
-4. CWT Scalogram Generator: time-frequency conversion for spectral path.
-5. 1D Inception Encoder: temporal multi-scale feature extractor.
-6. 2D CNN Spectral Encoder: local spectral pattern extraction.
-7. Low-Frequency Spectral Head: explicit low-band spectral features.
-8. Cross-Modal Attention Fusion: aligns temporal and spectral context.
-9. Global Pool + Concat: merges fused, p-wave, and low-frequency vectors.
-10. Classifier MLP: maps concatenated features to class logits.
-11. Prototype Head/Loss: enforces latent class structure when enabled.
-12. CE + Prototype Total Loss: joint optimization objective.
+### 18.1 Common Failure Modes
 
-## 14. Flowchart Blocks Explained
+1. N/S boundary ambiguity under low P-wave visibility.
+2. V/F overlap in ventricular morphology variants.
+3. Prototype collapse or poor separation if $\lambda$ scheduling is misconfigured.
+4. Misaligned branch preprocessing causing unstable fusion.
 
-Runtime flowchart blocks:
-1. Raw R-peak Segments: source beat arrays.
-2. balance_after_split gate: split-first vs pre-balanced loading route.
-3. Split and train-only balancing: leakage-safe balancing on train split.
-4. DataLoader build: batching for both 1D and 2D branches.
-5. Train NSHT_Dual_Evo: optimization over epochs.
-6. Best-checkpoint save: validation-selected model snapshot.
-7. Test evaluation: final metrics on untouched split.
-8. XAI execution: wavelet, attention, stream-energy visual artifacts.
-9. Prototype export path: optional prototype-space embedding extraction.
+### 18.2 Diagnostics
 
-## 15. Equation Rendering Compatibility
-
-Use multiline display blocks for robust Markdown preview:
-
-$$
-\psi(t)=e^{-\frac{t^2}{2\sigma^2}}\cos\!\left(2\pi f_0\frac{t}{\sigma}\right)
-$$
-
-$$
-\mathcal{L}_{\mathrm{proto}}=\frac{1}{N}\sum_{i=1}^{N}\lVert f_i-p_{y_i}\rVert_2^2
-$$
-
-$$
-\mathcal{L}_{\mathrm{total}}=\mathcal{L}_{\mathrm{CE}}+\lambda\,\mathcal{L}_{\mathrm{proto}}
-$$
-
-For compatibility, prefer `\lVert\cdot\rVert` over mixed Unicode norm bars in equations.
+1. Inspect attention maps for mode collapse.
+2. Inspect learned wavelet parameter distributions.
+3. Evaluate class-wise embedding distances to prototypes.
+4. Verify balancing policy and split integrity before interpreting metrics.
 
 ---
 
-## Appendix: File Structure
+## 19. Ablation Blueprint
 
+Minimum publication-quality ablations:
+
+1. Remove learnable wavelet front-end (replace with fixed transform).
+2. Remove cross-modal attention (use naive concatenation).
+3. Remove prototype loss ($\lambda=0$).
+4. Remove low-frequency/P-wave branch.
+5. Disable stats branch (NSHT-Tri to NSHT comparison).
+6. Balance policy comparison (split-first vs pre-balanced).
+
+All ablations should include repeated seeds and confidence intervals.
+
+---
+
+## 20. Reproducibility Standard
+
+1. Persist random seeds and split indices.
+2. Persist exact config snapshots for every run.
+3. Persist checkpoint hashes and training logs.
+4. Record software stack versions and GPU runtime settings.
+5. Bundle metrics with linked artifact IDs.
+
+This supports exact reruns and auditability.
+
+---
+
+## 21. Architecture and Runtime Flowcharts
+
+### 21.1 NSHT Dual/Tri Core Architecture
+
+```mermaid
+flowchart TD
+  A[ECG Beat Input] --> B[Learnable Wavelet Front-End]
+  A --> C[Spectral Transform Path]
+  A --> D[P-Wave Low-Frequency Head]
+
+  B --> E[Temporal Encoder 1D]
+  C --> F[Spectral Encoder 2D]
+
+  E --> G[Cross-Modal Attention Fusion]
+  F --> G
+
+  G --> H[Fused Latent Vector]
+  D --> I[Low-Frequency Vector]
+
+  H --> J[Concat Features]
+  I --> J
+
+  J --> K{NSHT-Tri Enabled}
+  K -->|No| L[Classifier Head]
+  K -->|Yes| M[Stats Feature Projector]
+  M --> N[Tri-Stream Concat]
+  N --> L
+
+  L --> O[5-Class Logits]
+  O --> P[Softmax]
+  J --> Q[Prototype Head]
+  Q --> R[Prototype Loss]
 ```
-ClassficationECG/
-├── ecg_nsht_model.py           # Complete NSHT implementation
-├── NSHT_ARCHITECTURE.md        # This documentation
-├── models/
-│   └── nsht_best.pth           # Trained model weights
-│   └── nsht_results.npy        # Test results and features
-├── balanced_data/
-│   ├── X_balanced.npy          # Input signals
-│   └── y_balanced.npy          # Labels
+
+### 21.2 Data Integrity and Evaluation Flow
+
+```mermaid
+flowchart TD
+  A[Raw Segments] --> B{balance_after_split}
+  B -->|true| C[Split Train Val Test]
+  B -->|false| D[Load Prebalanced Arrays]
+  C --> E[Apply SMOTE or ADASYN on Train]
+  E --> F[Build NSHT DataLoaders]
+  D --> F
+  F --> G[Train NSHT Family]
+  G --> H[Validation Model Selection]
+  H --> I[Test Evaluation]
+  I --> J[Run explain_paper3.py]
+  J --> K[Wavelet and Attention Artifacts]
 ```
 
 ---
 
-*Document Version: 1.0*
-*Date: January 24, 2026*
-*Author: ECG Classification Research*
+## 22. Manuscript Claim Guardrails
+
+For scientific correctness:
+
+1. Distinguish NSHT dual-stream results from NSHT-Tri results.
+2. Separate architecture gains from balancing-policy gains.
+3. Attribute prototype-space interpretability claims only when prototype head/loss is active.
+4. Avoid claiming fixed-wavelet behavior when learnable front-end is used.
+
+---
+
+## 23. Equation Rendering Compatibility
+
+Use standalone display blocks for robust markdown rendering:
+
+$$
+\psi(t;\sigma,\omega_0)=\exp\!\left(-\frac{t^2}{2\sigma^2}\right)\cos\!\left(\omega_0\frac{t}{\sigma}\right)
+$$
+
+$$
+\mathcal{L}_{\mathrm{proto}}=\frac{1}{N}\sum_{i=1}^{N}\|h_i-p_{y_i}\|_2^2
+$$
+
+$$
+\mathcal{L}_{\mathrm{total}}=\mathcal{L}_{\mathrm{CE}}+\lambda\mathcal{L}_{\mathrm{proto}}
+$$
+
+Prefer explicit LaTeX operators and one equation per display block.
+
+---
+
+## 24. Reference Pointers
+
+Core conceptual references:
+
+- Wavelet theory and medical signal processing foundations.
+- Attention mechanisms for cross-modal fusion.
+- Prototype learning and metric-regularized classification.
+- ECG benchmark literature for MIT-BIH and INCART contexts.
+
+This monograph is intended to be the canonical deep architecture reference for Paper 3 assets in this repository.

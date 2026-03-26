@@ -296,6 +296,34 @@ Pipeline flow blocks:
 7. Checkpoint + Test Evaluation: final held-out metrics.
 8. Paper 1 XAI block: Grad-CAM, Integrated Gradients, and branch summaries.
 
+## Novelty Markers in Architecture and Flow
+
+Marked novelty points in this Paper 1 implementation:
+1. Multi-kernel Inception branches are the core architecture novelty for morphology-aware multi-scale temporal learning.
+2. 1x1 bottleneck is a compute-aware novelty that enables wide kernels while controlling parameters.
+3. Residual merge points are stability novelty for deep 1D training.
+4. Split-first balancing gate is a methodology novelty for leakage-safe evaluation.
+5. Script-integrated XAI generation is an operational novelty that ties explanations to trained checkpoints.
+
+## Base InceptionTime vs Your Paper 1 Pipeline
+
+| Dimension | Base InceptionTime | Your Pipeline |
+|---|---|---|
+| Data balancing | Often described as preprocessing stage | Supports split-first and train-only balancing |
+| Runtime profile | Generic training setup | Container/B200-aware runtime controls |
+| Interpretability | Usually external analysis | Integrated explain script and artifact set |
+| Reproducibility | Paper-level narrative | Config-driven + checkpointed + artifact-based workflow |
+
+## Detailed End-to-End Explanation
+
+1. ECG beats are segmented around R-peaks and routed via chosen mode.
+2. Data policy applies either pre-balanced loading or split-first train-only balancing.
+3. Inception stack extracts short, medium, and long temporal motifs.
+4. Residual and pooling stages stabilize and compress representation.
+5. Classifier head produces logits optimized with CE under LR schedule and early stopping.
+6. Best checkpoint is selected by validation objective.
+7. Final test metrics and XAI artifacts are generated from the selected checkpoint.
+
 ## Equation Rendering Compatibility
 
 If equations fail in preview, keep display equations in multiline form:
