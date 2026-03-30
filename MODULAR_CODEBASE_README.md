@@ -43,7 +43,7 @@ Each guide now includes:
 ClassficationECG/
 ├── src/                          # Main source package
 │   ├── data/                     # Data loading and preprocessing
-│   │   ├── dataset.py           # ECGDataModule with SMOTE handling
+│   │   ├── dataset.py           # ECGDataModule with balancing handling (SMOTE/ADASYN)
 │   │   └── download.py          # Download, create RAW, and balance datasets
 │   ├── models/                   # Model architectures
 │   │   ├── inception_time.py    # Paper 1: Context-Aware InceptionTime
@@ -227,9 +227,23 @@ The default Paper 3 config is now set up to retrain NSHT with prototype supervis
 ### 4. K-Fold Cross-Validation (for paper results)
 
 ```bash
-# Run 10-fold CV with proper SMOTE handling
+# Run 10-fold CV with per-fold balancing
 python scripts/train.py --config configs/paper1_inceptiontime.yaml --kfold
 ```
+
+K-fold config keys:
+
+```yaml
+kfold:
+    enabled: true
+    n_splits: 10
+    apply_balancing_per_fold: true
+    balancing_target: null
+```
+
+Backward compatibility:
+- `apply_smote_per_fold` and `smote_target` are still accepted.
+- Prefer `apply_balancing_per_fold` and `balancing_target` in new configs.
 
 ### 5. Evaluate a Model
 
@@ -376,9 +390,18 @@ trainer = Trainer(
     train_loader=loaders['train'],
     val_loader=loaders['val'],
     use_amp=True,
-    use_class_weights=True
+    use_class_weights=True,
+    label_smoothing=0.05,
+    augmentation_prob=0.35,
+    augmentation_noise_std=0.008,
+    augmentation_amplitude_jitter=0.08,
+    augmentation_time_shift_pct=0.02
 )
-history = trainer.train(epochs=100, patience=15)
+history = trainer.train(
+    epochs=100,
+    patience=15,
+    monitor='val_acc'  # Use 'val_loss' to recover previous behavior
+)
 
 # Evaluate
 results = evaluate_model(model, loaders['test'])

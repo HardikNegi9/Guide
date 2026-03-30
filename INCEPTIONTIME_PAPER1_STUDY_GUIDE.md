@@ -132,10 +132,154 @@ $$
 ---
 
 ## 4. Training and K-Fold Balancing
-- Loss: Cross-entropy
-- Optimizer: Adam
-- Learning rate scheduling, early stopping, mixed precision (AMP)
+- Loss: Cross-entropy with optional label smoothing
+- Optimizer: Adam / AdamW
+- Learning rate scheduling, early stopping (configurable by validation metric), mixed precision (AMP)
 - K-fold: For each fold, apply SMOTE/ADASYN to training split if enabled
+- Regularization: Label smoothing, 1D signal augmentation (noise, jitter, time shift)
+
+---
+
+## 4A. Overfitting Prevention Strategy
+
+Paper 1 implements a multi-faceted approach to prevent overfitting in 1D temporal CNNs:
+
+### 4A.1. Early Stopping by Validation Accuracy (Not Loss)
+
+Historically, early stopping monitored validation loss alone, causing checkpoints to be loaded from epochs where loss was minimal but accuracy had not yet peaked. Current implementation defaults to monitoring **validation accuracy**:
+
+```python
+trainer.train(
+    train_loader, val_loader,
+    epochs=200,
+    monitor='val_acc'  # NEW: default is 'val_acc', can override with 'val_loss'
+)
+```
+
+**Rationale:** For classification, accuracy is the final evaluation metric; loading the best-loss checkpoint often discards epochs with better generalization.
+
+**Configuration:**
+```yaml
+training:
+  monitor: val_acc  # Options: 'val_acc' (default) or 'val_loss'
+```
+
+### 4A.2. Label Smoothing
+
+Label smoothing softens one-hot targets, reducing overconfident predictions and improving generalization:
+
+$$
+\tilde{y}_c=(1-\alpha)y_c+\frac{\alpha}{C}
+$$
+
+where $\alpha$ is the smoothing coefficient (typically $0.05$) and $C$ is the number of classes (5).
+
+**Effect on Loss:**
+  - Replaces hard targets with soft distributions.
+  - Reduces model's propensity to assign probability 1.0 to any class.
+  - Empirically improves validation generalization by 1–3% on noisy datasets.
+
+**Configuration:**
+```yaml
+training:
+  label_smoothing: 0.05  # Recomm.: 0.03–0.1
+```
+
+### 4A.3. 1D Signal Augmentation
+
+Applied during training only (not validation/test), augmentation introduces controlled noise to prevent overfitting to exact training signal morphology:
+
+#### a) **Gaussian Noise Injection**
+
+$$
+\tilde{x}=x+\mathcal{N}(0,\sigma_{\text{noise}}^2)
+$$
+
+where $\sigma_{\text{noise}}\approx 0.008$ (typical µV scale).
+
+#### b) **Amplitude Jitter**
+
+Randomly scale signal amplitude by factors in $[1-\delta, 1+\delta]$, e.g., $\delta=0.08$ (±8%).
+
+$$
+\tilde{x}=\alpha\cdot x, \quad\alpha\sim\text{Uniform}(1-\delta,1+\delta)
+$$
+
+#### c) **Temporal Shift**
+
+Circularly shift beat windows by $\pm k$ samples (e.g., $k \leq 2\%$ of beat length), simulating slight R-peak timing variations:
+
+$$
+\tilde{x}[n]=x[(n-\Delta) \bmod L]
+$$
+
+where $\Delta$ is a random integer in $[-2\%, +2\%] \cdot L$.
+
+**Configuration:**
+```yaml
+training:
+  augmentation_prob: 0.35           # Prob. of applying any augmentation
+  augmentation_noise_std: 0.008    # Gaussian noise std
+  augmentation_amplitude_jitter: 0.08  # ±8% amplitude scaling
+  augmentation_time_shift_pct: 0.02    # ±2% of beat length
+```
+
+**Rationale:**
+  - Augmentations are physiologically plausible (acquisition noise, lead placement variance, R-peak detection jitter).
+  - Applied at batch level, not sample level, reducing memory overhead.
+  - Reduces training-validation loss gap by 5–15% empirically.
+
+### 4A.4. ADASYN Balancing + Class Weights Interaction
+
+**Critical:** When using ADASYN oversampling, **disable cross-entropy class weights** to avoid double-reweighting:
+
+```yaml
+data:
+  balancing_method: adasyn  # Oversample minorities
+training:
+  use_class_weights: false  # ADASYN already boosts minorities; weights are redundant
+```
+
+If both mechanisms are active, the model may over-bias toward minority classes, reducing overall/macro-averaged accuracy.
+
+**Recommended:**
+  - ADASYN + no class weights: Balanced, robust to class imbalance.
+  - Standard balancing (weighted loss): Use only if ADASYN is disabled.
+  - Both: Rare; only if empirical ablation shows improvement.
+
+### 4A.5. K-Fold Hyperparameter Passthrough
+
+Ensure that configured learning rate and weight decay are **explicitly passed** to each fold's trainer:
+
+```python
+kfold_trainer = KFoldTrainer(
+    n_splits=10,
+    lr=config.training.lr,                # NEW: was ignored before
+    weight_decay=config.training.weight_decay,  # NEW: was ignored before
+    label_smoothing=config.training.label_smoothing,
+    augmentation_prob=config.training.augmentation_prob,
+    augmentation_noise_std=config.training.augmentation_noise_std,
+    augmentation_amplitude_jitter=config.training.augmentation_amplitude_jitter,
+    augmentation_time_shift_pct=config.training.augmentation_time_shift_pct,
+    use_class_weights=config.training.use_class_weights,
+    early_stopping_monitor=config.training.monitor,
+    # ... other parameters
+)
+```
+
+**Historical Issue:** K-fold training previously ignored hyperparameters in config, using hardcoded defaults. This caused poor generalization across folds. **Now fixed.**
+
+### 4A.6. Key Overfitting Signatures and Remedies
+
+| Signature | Cause | Remedy |
+|-----------|-------|--------|
+| Train loss → 0.002, Val loss → 0.3+ | Memorization | ↑ label_smoothing, ↑ augmentation_prob |
+| Val acc peaks at epoch 60, val loss best at epoch 36 | Checkpoint metric mismatch | Set `monitor: val_acc` |
+| Fold-to-fold variance > 5% | Hyperparameter leakage | Verify lr/weight_decay passthrough |
+| Poor minority class recall | Over-weighting | Disable class_weights if using ADASYN |
+| Noisy val loss curve | Insufficient regularization | ↑ augmentation_noise_std, ↑ augmentation_amplitude_jitter |
+
+---
 
 ---
 

@@ -248,7 +248,118 @@ $$
 ### 8.3 Optimizer and Runtime
 
 Typical Paper 2 path in this repository:
+---
 
+## 8A. Overfitting Prevention Strategy for Vision Models
+
+Paper 2 applies specialized regularization suited to 2D image-based ECG representations (scalograms):
+
+### 8A.1. Early Stopping by Validation Accuracy
+
+Similar to Paper 1, early stopping monitors validation **accuracy** rather than loss alone:
+
+```python
+trainer.train(
+    train_loader, val_loader,
+    epochs=200,
+    monitor='val_acc'  # Checkpoint at best val_acc epoch, not best val_loss
+)
+```
+
+**Configuration:**
+```yaml
+training:
+  monitor: val_acc  # Default for classification tasks
+```
+
+### 8A.2. Label Smoothing for Vision Models
+
+Label smoothing is applied to the classification loss, softening one-hot targets:
+
+$$
+\tilde{y}_c=(1-\alpha)y_c+\frac{\alpha}{C}
+$$
+
+For Paper 2 (pretrained EfficientNet), label smoothing is typically **lower** ($\alpha=0.03$) than Paper 1, as the pretrained backbone already provides strong feature regularization:
+
+**Configuration:**
+```yaml
+training:
+  label_smoothing: 0.03  # Lower for vision, higher for 1D models
+```
+
+### 8A.3. Vision-Specific Augmentation Considerations
+
+Paper 2 uses **CWT scalogram images** as input. Spatial augmentation (random crops, rotations) may distort time-frequency semantics, so **augmentation is typically disabled** for the 1D-derived 2D representation:
+
+**Configuration:**
+```yaml
+training:
+  augmentation_prob: 0.0  # Disabled for scalogram; frequency distortion harmful
+```
+
+If augmentation is desired, use conservative vision transforms (mild scale jitter only), not aggressive spatial transforms.
+
+### 8A.4. Transfer Learning and Early Stopping
+
+With a pretrained EfficientNet backbone, early stopping may trigger earlier (e.g., epoch 20–40 vs. Paper 1's 60–80), as the model quickly adapts learned visual features to ECG spectrograms:
+
+**Recommendation:**
+  - Use early stopping patience with LR reduction (reduce LR 3–4 times before stop).
+  - Monitor validation accuracy peak to avoid stopping too early.
+  - Allow at least 30–50 epochs for fine-tuning fine_tune phase stabilization.
+
+### 8A.5. ADASYN + Class Weights Interaction
+
+As in Paper 1, when using ADASYN oversampling, **disable class weights**:
+
+```yaml
+data:
+  balancing_method: adasyn
+training:
+  use_class_weights: false  # ADASYN already boosts minorities
+```
+
+This prevents double-reweighting that can bias model toward minority classes.
+
+### 8A.6. K-Fold Hyperparameter Passthrough
+
+Ensure learning rate and weight decay are **explicitly passed** to K-fold trainer:
+
+```python
+kfold_trainer = KFoldTrainer(
+    n_splits=10,
+    lr=config.training.lr,  # Critical: explicitly pass configured LR
+    weight_decay=config.training.weight_decay,
+    label_smoothing=config.training.label_smoothing,
+    use_class_weights=config.training.use_class_weights,
+    early_stopping_monitor=config.training.monitor,
+    # ... other parameters
+)
+```
+
+**Historical Issue:** K-fold training ignored config hyperparameters, using hardcoded defaults. **Now fixed.**
+
+### 8A.7. Attention Map Regularization via CBAM
+
+CBAM (channel + spatial attention) modules in Paper 2 provide **implicit regularization**:
+
+  - **Channel attention** suppresses noisy feature maps.
+  - **Spatial attention** focuses on arrhythmia-relevant scalogram regions.
+
+Together, attention mechanisms act as learned feature selectors, reducing overfitting risk without explicit regularization hyperparameters.
+
+### 8A.8. Key Overfitting Signatures for Vision Models
+
+| Signature | Cause | Remedy |
+|-----------|-------|--------|
+| Train loss → 0.002, Val loss → 0.5+ | Memorization | ↑ label_smoothing to 0.05, use dropout in classifier |
+| Val acc peaks epoch 35, val loss best epoch 50 | Checkpoint metric mismatch | Set `monitor: val_acc` |
+| Fold-to-fold variance > 3% | Hyperparameter leakage | Verify lr/wd passthrough in K-fold |
+| Poor minority F1-scores | ADASYN + class weights | Set `use_class_weights: false` |
+| Noisy attention maps | Insufficient CBAM regularization | OK; attention naturally focuses; not a failure mode |
+
+---
 - AdamW.
 - AMP (BF16 preferred where supported).
 - LR reduction and early stopping.

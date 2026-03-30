@@ -225,8 +225,186 @@ with schedule $\lambda(t)$ typically increased over epochs to avoid early over-c
 ### 10.3 Practical Interpretation
 
 - CE optimizes discrimination.
-- Prototype term regularizes latent geometry.
+- Prototype term regularizes latent geometry (prototype weight $\lambda$ typically 0.2–0.5).
 - Together they improve separation and interpretability.
+
+---
+
+## 10A. Overfitting Prevention Strategy for Hybrid Models
+
+Paper 3 combines temporal and spectral streams with prototype regularization. Overfitting prevention is multi-layered:
+
+### 10A.1. Early Stopping by Validation Accuracy
+
+Default monitoring metric is **validation accuracy**, not loss:
+
+```python
+trainer.train(
+    train_loader, val_loader,
+    epochs=200,
+    monitor='val_acc'  # Checkpoint at best validation accuracy epoch
+)
+```
+
+**Configuration:**
+```yaml
+training:
+  monitor: val_acc  # Best practice for classification
+```
+
+### 10A.2. Label Smoothing in Dual-Loss Context
+
+Label smoothing softens cross-entropy targets, reducing overconfident logits while the prototype loss regularizes embedding geometry:
+
+$$
+\mathcal{L}_\text{total} = \mathcal{L}_\text{CE}(\tilde{y}_c, \hat{y}_c) + \lambda \mathcal{L}_\text{proto}(h, p_c)
+$$
+
+where:
+$$
+\tilde{y}_c = (1-\alpha)y_c + \frac{\alpha}{C}, \quad \alpha = 0.05
+$$
+
+**Configuration:**
+```yaml
+training:
+  label_smoothing: 0.05    # Soft targets reduce overconfidence
+  prototype_loss_weight: 0.2  # $\lambda$ in joint loss
+```
+
+**Interaction:** Prototype loss provides explicit structural regularization; label smoothing reduces hard label artifacts. Combined, they significantly reduce memorization risk.
+
+### 10A.3. 1D Signal Augmentation (Temporal Stream)
+
+Applied to the 1D signal branch during training, similar to Paper 1:
+
+#### a) **Gaussian Noise**
+$$\tilde{x} = x + \mathcal{N}(0, \sigma_{\text{noise}}^2), \quad \sigma_{\text{noise}} = 0.008$$
+
+#### b) **Amplitude Jitter**
+$$\tilde{x} = \alpha \cdot x, \quad \alpha \sim \text{Uniform}(1-\delta, 1+\delta), \quad \delta = 0.08$$
+
+#### c) **Temporal Shift**
+$$\tilde{x}[n] = x[(n - \Delta) \bmod L], \quad \Delta \in [-2\%, +2\%] \cdot L$$
+
+**Configuration:**
+```yaml
+training:
+  augmentation_prob: 0.35               # 35% of batches augmented
+  augmentation_noise_std: 0.008        # Gaussian noise std
+  augmentation_amplitude_jitter: 0.08  # ±8% amplitude jitter
+  augmentation_time_shift_pct: 0.02    # ±2% temporal shift
+```
+
+**Note:** Spectral stream (2D) augmentation is **not applied**, as time-frequency distortion misaligns learned patterns in the CWT representation.
+
+### 10A.4. Learnable Wavelet Preprocessing as Implicit Regularization
+
+The learnable wavelet front-end in NSHT introduces **adaptive denoising** as part of the forward pass:
+
+$$z_k = x * \psi_k(\sigma_k, \omega_{0,k})$$
+
+where $\sigma_k$ and $\omega_{0,k}$ are **gradient-updatable parameters**.
+
+**Regularization Effect:**
+  - Prevents hard-wired denoising from overfitting to training noise distribution.
+  - Forces the model to learn task-relevant filtering rather than memorizing idiosyncratic signal properties.
+  - Acts as an implicit noise robustness mechanism.
+
+### 10A.5. Cross-Modal Attention as Learned Feature Selection
+
+Cross-modal fusion (temporal queries into spectral context) implicitly learns which spatio-temporal regions are relevant:
+
+$$A = \text{softmax}\left(\frac{QK^\top}{\sqrt{d_k}}\right), \quad F = AV$$
+
+This learned selection acts as **soft feature masking**, suppressing noisy/irrelevant modality combinations and reducing overfitting to training-specific mode correlations.
+
+### 10A.6. Prototype Loss as Structural Regularization
+
+Prototype loss explicitly encourages cluster structure in the latent space:
+
+$$\mathcal{L}_\text{proto} = \frac{1}{N} \sum_{i=1}^N \| h_i - p_{y_i} \|_2^2$$
+
+**Regularization Benefits:**
+  - Prevents embeddings from drifting arbitrarily in feature space.
+  - Enforces inter-class separation through class prototype anchors.
+  - Reduces overfitting by constraining the hypothesis class (structured solutions preferred over arbitrary memorization).
+  - Improves generalization to test data with slightly different acquisition noise/morphology.
+
+### 10A.7. ADASYN + Class Weights: Disable Class Weights
+
+When using ADASYN oversampling, **always disable cross-entropy class weights**:
+
+```yaml
+data:
+  balancing_method: adasyn
+training:
+  use_class_weights: false  # ADASYN already rebalances; weights redundant and harmful
+```
+
+**Why:** ADASYN increases minority class representation in each batch; additional CE weighting over-emphasizes minorities, biasing the model away from majority classes. Result: reduced overall/macro accuracy.
+
+**Recommended approach:** ADASYN (data-level balancing) handles class imbalance; prototype loss + CE (loss-level) handle generalization. No class weights needed.
+
+### 10A.8. K-Fold Hyperparameter Passthrough
+
+Critical fix: Ensure learning rate, weight decay, and all regularization parameters are **explicitly passed** to each fold's trainer:
+
+```python
+kfold_trainer = KFoldTrainer(
+    n_splits=10,
+    lr=config.training.lr,  # Must pass; was hardcoded before
+    weight_decay=config.training.weight_decay,
+    label_smoothing=config.training.label_smoothing,
+    prototype_loss_weight=config.training.prototype_loss_weight,
+    augmentation_prob=config.training.augmentation_prob,
+    augmentation_noise_std=config.training.augmentation_noise_std,
+    augmentation_amplitude_jitter=config.training.augmentation_amplitude_jitter,
+    augmentation_time_shift_pct=config.training.augmentation_time_shift_pct,
+    use_class_weights=config.training.use_class_weights,
+    early_stopping_monitor=config.training.monitor,
+    # ... other parameters
+)
+```
+
+**Historical Issue:** K-fold ignored configured hyperparameters. **Fixed in current implementation.**
+
+### 10A.9. Key Overfitting Signatures for Hybrid Models
+
+| Signature | Cause | Remedy |
+|-----------|-------|--------|
+| Train loss → 0.002, Val loss → 0.5+ | Memorization in dual streams | ↑ label_smoothing to 0.08, ↑ prototype_loss_weight |
+| Val acc peaks epoch 80, val loss best epoch 40 | Checkpoint metric mismatch | Set `monitor: val_acc` |
+| Stream imbalance (temporal >> spectral) | One stream not regularized | Check augmentation_prob applies to both, verify label_smoothing |
+| Fold-to-fold variance > 5% | Hyperparameter leakage | Verify lr/wd/λ passthrough in K-fold |
+| Poor minority class separation | ADASYN + class weights | Disable class_weights; increase prototype_loss_weight |
+| Prototype loss constant, CE loss decreases | Prototype learning stalled | ↓ prototype_loss_weight, ensure prototypes updated each epoch |
+
+### 10A.10. Recommended Regularization Configuration for Paper 3
+
+Balanced setup for INCART dataset with ADASYN:
+
+```yaml
+data:
+  balancing_method: adasyn
+  balance_after_split: true
+
+training:
+  monitor: val_acc
+  label_smoothing: 0.05
+  prototype_loss_weight: 0.2
+  augmentation_prob: 0.35
+  augmentation_noise_std: 0.008
+  augmentation_amplitude_jitter: 0.08
+  augmentation_time_shift_pct: 0.02
+  use_class_weights: false  # ADASYN is active; disable weights
+  lr: 0.0008
+  weight_decay: 0.0001
+```
+
+This configuration provides multi-layered regularization: data-level (ADASYN), feature-level (learnable wavelets, augmentation), objective-level (label smoothing + prototype loss), and optimization-level (weight decay, early stopping).
+
+---
 
 ---
 
