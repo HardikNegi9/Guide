@@ -41,6 +41,7 @@ flowchart TD
         B3[5x1 Conv]
         B4[MaxPool 3x1 -> 1x1 Conv]
         B1 & B2 & B3 & B4 --> BX[Concat]
+        BX --> BY[SE Block Attention]
     end
     style B fill:#e0f7fa
     style C fill:#e0f7fa
@@ -66,9 +67,22 @@ $$
 \mathrm{Branch}_i(x) = \mathrm{Conv1D}_{k_i}(x) \quad \text{for kernel size } k_i
 $$
 
-The outputs are concatenated:
+The outputs are concatenated and passed through a Squeeze-and-Excitation (SE) Block for channel-wise attention:
 $$
-\mathrm{Inception}(x) = \mathrm{Concat}(\mathrm{Conv1D}_{k_1}(x), \mathrm{Conv1D}_{k_2}(x), \ldots, \mathrm{MaxPool}(x) \rightarrow \mathrm{Conv1D}_{1}(x))
+\mathrm{Concat\_Out}(x) = \mathrm{Concat}(\mathrm{Conv1D}_{k_1}(x), \mathrm{Conv1D}_{k_2}(x), \ldots, \mathrm{MaxPool}(x) \rightarrow \mathrm{Conv1D}_{1}(x))
+$$
+$$
+\mathrm{Inception}(x) = \mathrm{SEBlock}(\mathrm{ReLU}(\mathrm{BatchNorm}(\mathrm{Concat\_Out}(x))))
+$$
+
+### 3.2.1 Squeeze-and-Excitation (SE) Block
+The SE block explicitly models interdependencies between channels to perform dynamic channel-wise feature recalibration.
+1. **Squeeze**: Global Average Pooling condenses each channel into a single scalar.
+2. **Excite**: A two-layer fully connected bottleneck (with ratio $r=16$) produces channel weights via Sigmoid.
+3. **Scale**: The original feature maps are scaled by these weights.
+
+$$
+\mathrm{SEBlock}(x) = x \otimes \sigma(W_2 \delta(W_1 \mathrm{GAP}(x)))
 $$
 
 ### 3.3. InceptionTime Block
@@ -326,6 +340,7 @@ $$
 
 ## 7. Novelty and Strengths
 - Multi-scale temporal feature extraction via parallel convolutions
+- Squeeze-and-Excitation (SE) attention mechanism dynamically weighting crucial temporal features and channels
 - Robust to class imbalance with per-fold balancing
 - Efficient training with residuals, batch norm, and mixed precision
 

@@ -63,6 +63,7 @@ flowchart TD
         X4 --> X6
         X5 --> X6
         X6 --> X7[BatchNorm + GELU/ReLU]
+        X7 --> X8[SE Block]
     end
 
     style C fill:#e3f2fd
@@ -139,7 +140,18 @@ $$
 Concatenation and normalization:
 
 $$
-z = \phi\big(\mathrm{BN}(\mathrm{Concat}(z_{11}, z_{21}, z_{41}, z_{pool}))\big)
+z_{concat} = \phi\big(\mathrm{BN}(\mathrm{Concat}(z_{11}, z_{21}, z_{41}, z_{pool}))\big)
+$$
+
+### 4.3.1 Squeeze-and-Excitation (SE) Block
+To dynamically recalibrate channel-wise feature responses, an SE block (reduction ratio 16) scales the concatenated output:
+
+1. Squeeze: $s = \mathrm{GAP}(z_{concat})$
+2. Excite: $w = \sigma(W_{excite} \max(0, W_{squeeze} s))$
+3. Scale: $z = z_{concat} \otimes w$
+
+$$
+z = \mathrm{SEBlock}(z_{concat})
 $$
 
 ### 4.4 Residual Merge
@@ -221,7 +233,8 @@ This section explicitly tags novelty points for this repository and paper framin
 
 ### 8.1 Architectural Novelty Emphasis
 1. Bottlenecked multi-scale branches for ECG morphology at multiple durations.
-2. Residual staging for optimization stability under deep stacks and high-epoch schedules.
+2. Squeeze-and-Excitation (SE) attention for data-dependent channel recalibration of temporal features.
+3. Residual staging for optimization stability under deep stacks and high-epoch schedules.
 
 ### 8.2 Methodology Novelty
 1. Split-first balancing gate in runtime pipeline (train-only balancing when enabled).
