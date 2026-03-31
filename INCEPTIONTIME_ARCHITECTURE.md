@@ -67,7 +67,7 @@ flowchart TD
          Res6(("⊕"))
     end
     
-    Ctx[Context Module <br> (P-Wave, QRS, T-Wave Regional Mean Pooling)]
+    Ctx["Context Module <br> (P-Wave, QRS, T-Wave Regional Mean Pooling)"]
     
     subgraph Head [Classification Head]
         Pool[Concat: Global Avg Pooling & Global Max Pooling]
