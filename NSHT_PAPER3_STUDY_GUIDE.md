@@ -91,6 +91,17 @@ NSHT addresses these with learnable wavelet preprocessing, cross-modal fusion, a
 
 In strict adherence to the repository's src/data/download.py and src/data/dataset.py, the preprocessing pipeline avoids destructive filters (like Butterworth or high-pass denoising) to strictly preserve the inherent morphological fidelity of the QRS complexes. 
 
+#### Native Data Pipeline Flowchart
+\\\mermaid
+flowchart TD
+    Raw[Read WFDB Records & Annotations] --> Resample[Resample to 360 Hz <br> e.g. from INCART 257 Hz]
+    Resample --> ZScore[Continuous Record Z-Score Normalization]
+    ZScore --> Window[1080-Sample Extraction <br> Centered on R-Peak]
+    Window --> Map[AAMI 5-Class Target Mapping]
+    Map --> Split[Stratified Train/Val/Test Split]
+    Split --> TrainOnly[Apply ADASYN/SMOTE <br> to Training Split Only]
+\\\
+
 **Architectural Flow of Data Preparation:**
 
 A. **Data Ingestion (wfdb interface):**
@@ -139,6 +150,53 @@ For each beat:
 
 ### 5.2 Conceptual Dataflow
 
+### 5.3 Model Forward Pass (Pseudo-code)
+```python
+# Pseudo-code Implementation: NSHT_Dual_Evo Forward Pass
+def forward(self, x_1d, return_hidden=False):
+    # x_1d shape: [Batch, 1, 216]
+    
+    # 1. Learnable Spectral Stream (2D)
+    x_cwt = self.wavelet_transform(x_1d) # Parametric Morlet parameters
+    s = self.spectral_encoder_convs(x_cwt)
+    s = self.spectral_coord_attention(s)
+    s_seq = self.spectral_pool_to_1d(s) # Map back to temporal sequence length
+    
+    # 2. Temporal Stream (1D)
+    t = self.temporal_inception(x_1d)
+    t = self.temporal_mhsa(t) # Multi-Head Self Attention
+    t_seq = self.temporal_proj(t)
+    
+    # 3. Evolutionary Cross-Modal Fusion
+    # Spectral queries (Q) attend to Temporal patterns (K, V)
+    s_enhanced, cross_attn_map = self.fusion.cross_attn(query=s_seq, key=t_seq, value=t_seq)
+    
+    # Dynamic Sigmoid Gating between raw temporal vs attended spectral
+    gate = torch.sigmoid(self.fusion.gate_proj(torch.cat([t_seq.mean(-1), s_seq.mean(-1)], dim=-1)))
+    gate = gate.unsqueeze(-1)
+    
+    fused_seq = gate * t_seq + (1 - gate) * s_enhanced
+    fused_seq = self.fusion.refine_conv(torch.cat([t_seq, s_enhanced], dim=1)) + fused_seq
+    
+    # 4. Pooling & Prototype Distances
+    gap = torch.mean(fused_seq, dim=-1)
+    gmp = torch.max(fused_seq, dim=-1)[0]
+    latent_embedding = torch.cat([gap, gmp], dim=-1)
+    
+    logits = self.classifier(latent_embedding)
+    
+    if self.use_prototypes:
+        # Distance to class prototypes for regularization
+        prototype_dist = torch.cdist(latent_embedding, self.prototypes)
+        if return_hidden:
+            return logits, latent_embedding, prototype_dist
+            
+    if return_hidden:
+        return logits, latent_embedding
+        
+    return logits
+```
+
 $$
 (x_{1D},x_{2D})\xrightarrow{\text{encoders}}(h_t,h_s)\xrightarrow{\text{cross-modal fusion}}h_f\xrightarrow{\text{classifier}}\hat{y}
 $$
@@ -146,6 +204,42 @@ $$
 with optional prototype head and optional stats stream in NSHT-Tri.
 
 ---
+
+### 5.3 Model Definition Pseudo-Code
+
+For clarity on how the dataflows merge structurally:
+
+```python
+# Pseudo-code Implementation: NSHT_Dual_Evo Forward Pass
+class EvolutionaryFusion(nn.Module):
+    def forward(self, t_features, s_features):
+        # Cross Modal Attention (Spectral S as Queries, Temporal T as Keys/Values)
+        cross_attn_out, _ = self.cross_attn(query=s_features, key=t_features, value=t_features)
+        
+        # Dynamic Sigmoid Gating over global means
+        pooled_context = torch.cat([t_features.mean(-1), s_features.mean(-1)], dim=-1)
+        gate = torch.sigmoid(self.gate_proj(pooled_context)).unsqueeze(-1)
+        
+        # Gated Residual Fusion combining pristine temporal data with enriched cross-attention
+        fused = self.refine(torch.cat([t_features, cross_attn_out], dim=1))
+        return gate * t_features + (1 - gate) * fused
+
+class NSHT_Dual_Evo(nn.Module):
+    def forward(self, x_1d):
+        # 1. Spectral Stream (Learnable Preprocessing & 2D Encoder)
+        scalogram = self.wavelet_transform(x_1d) 
+        s = self.spectral_encoder(scalogram)
+        
+        # 2. Temporal Stream (1D Inception Multi-Scale & Textural Self-Attention)
+        t = self.inception_stem(x_1d)
+        t = self.temporal_mhsa(t)
+        
+        # 3. Fusion & Inference
+        h_fused = self.fusion(t, s)
+        h_pool = torch.cat([self.gap(h_fused), self.gmp(h_fused)], dim=1)
+        
+        return self.classifier(h_pool), h_pool # Latent vector returned for prototype objective
+```
 
 ## 6. Learnable Wavelet Front-End
 
@@ -479,21 +573,84 @@ Minimum report package:
 ---
 
 ## 14. Explainability Workflow (Paper 3)
+## 14. Multi-modal Explainable AI (XAI) Protocol (Paper 3)
 
-Primary script:
+The NSHT architecture requires specialized XAI techniques to decouple its dual-stream processing and metric learning latent spaces. Primary script: `scripts/explain_paper3.py`.
 
-- `scripts/explain_paper3.py`
+### 14.1. Learnable Wavelet Parameter Profiling
 
-Canonical command:
+The front-end spectral stream relies on parameterized Morlet wavelets. We extract the optimized scales $\sigma_k$ and center frequencies $\omega_{0,k}$ for visual tracking.
 
-```bash
-python scripts/explain_paper3.py \
-  --model-path checkpoints/paper3_nsht/best_model.pt \
-  --config configs/paper3_nsht.yaml \
-  --num-samples-per-class 1
+$$
+\psi_k(t) = \exp\left(-\frac{t^2}{2\sigma_k^2}\right) \cos\left( \omega_{0,k} \frac{t}{\sigma_k} \right)
+$$
+
+```python
+# Pseudo-code Implementation: Extracting Learned Wavelet Parameters
+def extract_wavelet_params(model):
+    wavelet_layer = model.wavelet_transform
+    sigmas = wavelet_layer.scales.detach().cpu().numpy()
+    frequencies = wavelet_layer.frequencies.detach().cpu().numpy()
+    
+    return [
+        {"filter": k, "sigma": sigmas[k], "freq_omega0": frequencies[k]} 
+        for k in range(len(sigmas))
+    ]
 ```
 
-Leakage-safe override:
+### 14.2. Cross-Attention Energy Profiling
+
+In the `Evolutionary Fusion` layer, the 2D Spectral features $S$ act as Keys/Values, and the 1D Temporal features $T$ act as Queries. The attention probability matrix $A$ reveals exactly which temporal steps requested which spectral frequencies:
+
+$$
+A = \mathrm{Softmax}\left( \frac{W_Q T \cdot (W_K S)^T}{\sqrt{d_k}} \right)
+$$
+
+```python
+# Pseudo-code Implementation: Cross-Attention Map Intercept
+def extract_cross_attention(model, x_1d):
+    activations = {}
+    
+    def get_attention(name):
+        def hook(model, input, output):
+            # output[1] contains the unprojected attention weights
+            activations[name] = output[1].detach().cpu().numpy()
+        return hook
+
+    # Register hook on the MultiheadAttention module
+    handle = model.fusion.cross_attn.register_forward_hook(get_attention('cross_attn'))
+    
+    _ = model(x_1d)
+    attention_map = activations['cross_attn']   # Shape: [Batch, L_t, L_s]
+    handle.remove()
+    
+    return attention_map
+```
+
+### 14.3. Prototype Distance Latent Analysis (t-SNE)
+
+If $\lambda > 0$, the $N \times 192$ dimensional latent vectors $h_i$ are clustered around class-specific prototypes $P_c \in \mathbb{R}^{192}$. We extract all $h_i$ and project them down to 2D using t-SNE.
+
+```python
+# Pseudo-code Implementation: Prototype Latent Extraction
+def extract_prototypes_and_latents(model, test_loader):
+    model.eval()
+    latents, labels = [], []
+    
+    with torch.no_grad():
+        for batch_x, batch_y in test_loader:
+            _, hidden = model(batch_x, return_hidden=True)
+            latents.append(hidden.cpu().numpy())
+            labels.append(batch_y.cpu().numpy())
+            
+    latents_np = np.concatenate(latents, axis=0)      # Shape: [N, 192]
+    labels_np = np.concatenate(labels, axis=0)
+    prototypes = model.prototype_layer.prototypes.detach().cpu().numpy() # Shape: [5, 192]
+    
+    return latents_np, labels_np, prototypes
+```
+
+### 14.4. Execution Commands and Artifacts
 
 ```bash
 python scripts/explain_paper3.py \
@@ -504,23 +661,18 @@ python scripts/explain_paper3.py \
 ```
 
 Expected artifacts under `experiments/paper3_nsht/xai/`:
-
-1. `wavelet_params.png`.
-2. `cross_attention.png`.
-3. `stream_contributions.png`.
-4. `arrays.npz`.
-5. per-sample and run-level `summary.json`.
-6. optional prototype-space visual outputs.
+1. `wavelet_params.png`: Wavelet $\sigma$ and $\omega_0$ bounds.
+2. `cross_attention.png`: Temporal-vs-spectral activation heatmap matrix $A$.
+3. `stream_contributions.png`: Dynamic Sigmoid gating ratios charting $T$ versus $S$ reliance.
+4. `arrays.npz` and `summary.json`.
 
 Prototype export utility:
-
 ```bash
 python scripts/extract_nsht_prototypes.py \
   --model-path checkpoints/paper3_nsht/best_model.pt \
   --config configs/paper3_nsht.yaml
 ```
 
----
 
 ## 15. Novelty Matrix (Paper 3: NSHT_Dual_Evo)
 
@@ -734,6 +886,7 @@ python scripts/extract_nsht_prototypes.py \
 See [MODULAR_CODEBASE_README.md](MODULAR_CODEBASE_README.md) for detailed setup and additional options.
 
 This monograph is the canonical heavy study guide for Paper 3 in the current repository state.
+
 
 
 

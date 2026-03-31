@@ -105,6 +105,53 @@ flowchart TD
 ```
 
 ### 3.1.2 Internal Module Schematics
+
+### 3.1.3 Architectural Forward Pass (Pseudo-code)
+```python
+# Pseudo-code Implementation: ContextAwareInceptionTime Forward Pass
+def forward(self, x):
+    # x shape: [Batch, 1, 1080]
+    
+    # 1. Stem & Positional Encoding
+    x = self.stem_conv(x)
+    x = x + self.positional_encoding
+    
+    # 2. Alternating Inception & Dilated Blocks
+    for idx, block in enumerate(self.blocks):
+        residual = x
+        
+        if is_standard_inception(block):
+            # Parallel multi-scale temporal kernels
+            b1 = block.branch_9(x)
+            b2 = block.branch_19(x)
+            b3 = block.branch_39(x)
+            b_pool = block.branch_pool(x)
+        else:
+            # Dilated convolutions
+            b1 = block.dilated_1(x)
+            b2 = block.dilated_2(x)
+            b3 = block.dilated_4(x)
+            b_pool = block.dilated_8(x)
+            
+        x_concat = torch.cat([b1, b2, b3, b_pool], dim=1)
+        x_concat = F.relu(self.batch_norm(x_concat))
+        
+        # Squeeze-and-Excitation
+        x_se = self.se_block(x_concat)
+        
+        # Residual fusion
+        x = F.relu(x_se + self.residual_proj(residual))
+    
+    # 3. Context Pooling & Classification Head
+    gap = torch.mean(x, dim=-1)
+    gmp = torch.max(x, dim=-1)[0]
+    
+    features = torch.cat([gap, gmp], dim=-1)
+    features = self.dropout(F.relu(self.head_bn(self.head_dense(features))))
+    
+    logits = self.classifier(features)
+    return logits
+```
 ```mermaid
 flowchart LR
     %% Standard Inception Module Breakout
@@ -170,6 +217,52 @@ flowchart LR
 - **Bottleneck Projection** (light yellow): Efficiency novelty for ECG compute optimization.
 
 ---
+
+### 3.2 PyTorch Pseudo-Code Implementation
+
+The mathematical formulations above are directly instantiated in PyTorch as follows:
+
+```python
+# Pseudo-code Implementation: ContextAwareInceptionTime Architecture
+class InceptionModule(nn.Module):
+    def forward(self, x):
+        # Bottleneck to reduce parameters
+        x_b = self.bottleneck(x)
+        
+        # Multi-scale parallel temporal convolutions
+        z9 = self.conv_k9(x_b)
+        z19 = self.conv_k19(x_b)
+        z39 = self.conv_k39(x_b)
+        
+        # Pooled branch for baseline morphology retention
+        z_pool = self.pool_proj(self.max_pool(x))
+        
+        # Concatenate features from all branches
+        z = torch.cat([z9, z19, z39, z_pool], dim=1)
+        
+        # Squeeze-and-Excitation channel attention recalibration
+        z = self.se_block(self.relu(self.batch_norm(z)))
+        return z
+
+class ContextAwareInceptionTime(nn.Module):
+    def forward(self, x):
+        # 1. Stem & Positional Encoding
+        x = self.stem_conv(x)
+        x = x + self.positional_encoding
+        
+        # 2. Alternating Blocks (Standard/Dilated Inception)
+        for i, block in enumerate(self.blocks):
+            residual = self.residual_proj[i](x)
+            x = block(x)
+            x = self.relu(x + residual) # Residual Add
+            
+        # 3. Context Pooling (GAP + GMP concatenation)
+        h_pool = torch.cat([self.gap(x), self.gmp(x)], dim=1)
+        
+        # 4. Classifier Head
+        logits = self.classifier(h_pool)
+        return logits
+```
 
 ## 3.1 Baseline InceptionTime vs ContextAware Novelty
 
@@ -505,7 +598,41 @@ def compute_gradcam_1d(model, signal, target_class, target_layer):
     return normalize(cam_np)
 ```
 
-### 13.3. Execution Command
+### 13.3. Branch-Level Attention Summaries
+
+To discover which temporal scales (short, medium, or wide) dominate the inference process, we capture the post-activation mean magnitude of the parallel branches within the Inception modules. 
+
+The Inception module branches output temporal feature maps $Z_{k} \in \mathbb{R}^{B \times C \times T}$ for $k \in \{9, 19, 39\}$. We compute the spatial-averaged energy for each branch $L_{1}$ norm:
+
+$$
+E_k = \frac{1}{C \times T} \sum_{c=1}^{C} \sum_{t=1}^{T} |Z_{k}(c, t)|
+$$
+
+```python
+# Pseudo-code Implementation: Intercepting Branch Energies
+def extract_branch_energies(model, signal):
+    energies = {'k9': 0, 'k19': 0, 'k39': 0}
+    handles = []
+
+    def get_energy(branch_name):
+        def hook(mod, inp, out):
+            # Calculate the mean absolute activation over channels and time
+            energies[branch_name] += out.abs().mean().item()
+        return hook
+
+    # Attach hooks to the final Inception Block's parallel convolutions
+    target_module = model.blocks[-1]
+    handles.append(target_module.branch_9.register_forward_hook(get_energy('k9')))
+    handles.append(target_module.branch_19.register_forward_hook(get_energy('k19')))
+    handles.append(target_module.branch_39.register_forward_hook(get_energy('k39')))
+
+    _ = model(signal)
+    
+    for h in handles: h.remove()
+    return energies
+```
+
+### 13.4. Execution Command
 
 ```bash
 python scripts/explain_paper1.py \

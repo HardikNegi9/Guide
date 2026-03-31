@@ -60,6 +60,17 @@ This path trades exact temporal localization for richer local frequency-texture 
 
 In strict adherence to the repository's src/data/download.py and src/data/dataset.py, the preprocessing pipeline avoids destructive filters (like Butterworth or high-pass denoising) to strictly preserve the inherent morphological fidelity of the QRS complexes. 
 
+#### Native Data Pipeline Flowchart
+\\\mermaid
+flowchart TD
+    Raw[Read WFDB Records & Annotations] --> Resample[Resample to 360 Hz <br> e.g. from INCART 257 Hz]
+    Resample --> ZScore[Continuous Record Z-Score Normalization]
+    ZScore --> Window[1080-Sample Extraction <br> Centered on R-Peak]
+    Window --> Map[AAMI 5-Class Target Mapping]
+    Map --> Split[Stratified Train/Val/Test Split]
+    Split --> TrainOnly[Apply ADASYN/SMOTE <br> to Training Split Only]
+\\\
+
 **Architectural Flow of Data Preparation:**
 
 A. **Data Ingestion (wfdb interface):**
@@ -185,6 +196,42 @@ The repository now executes a multi-scale attention-augmented CNN path for Paper
 
 ### 6.1 High-Level Computation
 
+#### PyTorch Forward Pass Implementation
+```python
+# Pseudo-code Implementation: AttentionEfficientNet Forward Pass
+def forward(self, scalogram):
+    # scalogram shape: [Batch, 3, 224, 224] (CWT magnitude)
+    
+    # 1. Backbone Feature Hierarchy (Multi-scale Extract)
+    f2, f3, f4 = self.efficientnet_backbone.extract_endpoints(scalogram)
+    
+    # 2. Independent CBAM Attention per Scale
+    f2_attn = self.cbam_scale2(f2)
+    f3_attn = self.cbam_scale3(f3)
+    f4_attn = self.cbam_scale4(f4)
+    
+    # 3. Spatial Alignment (Upsampling to F2 resolution)
+    f3_up = F.interpolate(f3_attn, size=f2_attn.shape[-2:], mode='bilinear')
+    f4_up = F.interpolate(f4_attn, size=f2_attn.shape[-2:], mode='bilinear')
+    
+    # 4. Multi-Scale Fusion
+    fused_features = torch.cat([f2_attn, f3_up, f4_up], dim=1)
+    fused_features = F.relu(self.fusion_bn(self.fusion_conv(fused_features)))
+    
+    # 5. Global CBAM Refinement
+    fused_attn = self.global_cbam(fused_features)
+    
+    # 6. Global Pooling & Classification
+    gap = torch.mean(fused_attn, dim=[-2, -1])
+    gmp = torch.max(fused_attn.view(fused_attn.size(0), fused_attn.size(1), -1), dim=-1)[0]
+    
+    features = torch.cat([gap, gmp], dim=1)
+    features = self.dropout(features)
+    
+    logits = self.classifier(features)
+    return logits
+```
+
 The backbone extracts pyramidal features by tapping hierarchical outputs at block indices (e.g., scales 2, 3, and 4 in EfficientNet-B0), generating synchronized multi-scale context mappings. 
 
 $$
@@ -222,6 +269,44 @@ $$
 This produces interpretable attention maps aligned with Paper 2 XAI artifacts.
 
 ---
+
+### 6.4 Model Definition Pseudo-Code
+
+The AttentionEfficientNet applies dual CBAM attention over multi-scale visual patches.
+
+```python
+# Pseudo-code Implementation: AttentionEfficientNet Architecture
+class CBAM_Module(nn.Module):
+    def forward(self, x):
+        # Channel Attention isolates relevant frequency bands
+        x_out = self.channel_attention(x) * x
+        # Spatial Attention focuses on chronologically and texturally critical regions
+        x_out = self.spatial_attention(x_out) * x_out
+        return x_out
+
+class AttentionEfficientNet(nn.Module):
+    def forward(self, x_scalogram):
+        # 1. Backbone Feature Hierarchy Extract (from blocks C2, C3, C4)
+        f2, f3, f4 = self.efficientnet_backbone.extract_multiscale(x_scalogram)
+        
+        # 2. Independent CBAM Refinements (Scale-specific focus points)
+        f2 = self.cbam2(f2)
+        f3 = self.cbam3(f3)
+        f4 = self.cbam4(f4)
+        
+        # 3. Multi-Scale Spatial Alignment & Fusion
+        f3_up = F.interpolate(f3, size=f2.shape[2:], mode='bilinear')
+        f4_up = F.interpolate(f4, size=f2.shape[2:], mode='bilinear')
+        
+        # Dense convolutional fusion across the synchronized multi-scale stacks
+        f_concat = torch.cat([f2, f3_up, f4_up], dim=1)
+        f_fusion = self.fusion_conv(f_concat)
+        f_final = self.fusion_cbam(f_fusion)
+        
+        # 4. Dense Classifier Output
+        h_pool = torch.cat([self.gap(f_final), self.gmp(f_final)], dim=1)
+        return self.classifier(h_pool)
+```
 
 ## 7. Shape Trace and Interface Contracts
 
@@ -704,6 +789,7 @@ Useful references for Paper 2 writeups:
 - ECG benchmark framing: MIT-BIH and INCART literature.
 
 This monograph should be treated as the authoritative deep guide for Paper 2 in this repository.
+
 
 
 

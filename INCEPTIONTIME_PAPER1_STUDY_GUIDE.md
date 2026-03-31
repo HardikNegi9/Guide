@@ -1,4 +1,4 @@
-﻿# InceptionTime for 1D ECG Signal Classification: In-Depth Study Guide
+# InceptionTime for 1D ECG Signal Classification: In-Depth Study Guide
 
 ## 1. Introduction
 InceptionTime is a deep learning architecture designed for time series classification, inspired by the Inception modules from computer vision. This guide provides a comprehensive overview, including data flow, model structure, mathematical formulations, and a flowchart for Paper 1: "Context-Aware InceptionTime with Multi-Scale Temporal Processing" applied to ECG arrhythmia classification.
@@ -19,6 +19,17 @@ InceptionTime is a deep learning architecture designed for time series classific
 ### 2.1 Preprocessing Phase Architecture (Modular Codebase Reality)
 
 In strict adherence to the repository's src/data/download.py and src/data/dataset.py, the preprocessing pipeline avoids destructive filters (like Butterworth or high-pass denoising) to strictly preserve the inherent morphological fidelity of the QRS complexes. 
+
+#### Native Data Pipeline Flowchart
+\\\mermaid
+flowchart TD
+    Raw[Read WFDB Records & Annotations] --> Resample[Resample to 360 Hz <br> e.g. from INCART 257 Hz]
+    Resample --> ZScore[Continuous Record Z-Score Normalization]
+    ZScore --> Window[1080-Sample Extraction <br> Centered on R-Peak]
+    Window --> Map[AAMI 5-Class Target Mapping]
+    Map --> Split[Stratified Train/Val/Test Split]
+    Split --> TrainOnly[Apply ADASYN/SMOTE <br> to Training Split Only]
+\\\
 
 **Architectural Flow of Data Preparation:**
 
@@ -146,7 +157,90 @@ flowchart TD
     Res6 --> Ctx --> Pool --> Dense --> Out
 ```
 
-### 3.1.2 Internal Module Schematics
+#### 3.6 Model Definition Pseudo-Code
+
+To bridge the gap between architectural concept and code, the core forward pass leverages the following implementation structure:
+
+```python
+# Pseudo-code Implementation: ContextAwareInceptionTime Architecture
+class InceptionModule(nn.Module):
+    def forward(self, x):
+        # Bottleneck to reduce channel depth before expensive convolutions
+        x_b = self.bottleneck(x)
+        
+        # Multi-scale feature extraction representing short/meso/macro contexts
+        z9 = self.conv_k9(x_b)
+        z19 = self.conv_k19(x_b)
+        z39 = self.conv_k39(x_b)
+        z_pool = self.pool_proj(self.max_pool(x))
+        
+        z = torch.cat([z9, z19, z39, z_pool], dim=1)
+        z = self.se_block(self.relu(self.batch_norm(z))) # Channel Recalibration
+        return z
+
+class ContextAwareInceptionTime(nn.Module):
+    def forward(self, x):
+        # Stem and optional positional tracking
+        x = self.stem_conv(x) + self.positional_encoding
+        
+        # Residual-augmented Inception Blocks
+        for i, block in enumerate(self.blocks):
+            residual = self.residual_proj[i](x)
+            x = self.relu(block(x) + residual)
+            
+        # Classification formulation
+        h_pool = torch.cat([self.gap(x), self.gmp(x)], dim=1)
+        return self.classifier(h_pool)
+```
+
+## 3.1.2 Internal Module Schematics
+
+### 3.1.3 Architectural Forward Pass (Pseudo-code)
+```python
+# Pseudo-code Implementation: ContextAwareInceptionTime Forward Pass
+def forward(self, x):
+    # x shape: [Batch, 1, 1080]
+    
+    # 1. Stem & Positional Encoding
+    x = self.stem_conv(x)
+    x = x + self.positional_encoding
+    
+    # 2. Alternating Inception & Dilated Blocks
+    for idx, block in enumerate(self.blocks):
+        residual = x
+        
+        if is_standard_inception(block):
+            # Parallel multi-scale temporal kernels
+            b1 = block.branch_9(x)
+            b2 = block.branch_19(x)
+            b3 = block.branch_39(x)
+            b_pool = block.branch_pool(x)
+        else:
+            # Dilated convolutions
+            b1 = block.dilated_1(x)
+            b2 = block.dilated_2(x)
+            b3 = block.dilated_4(x)
+            b_pool = block.dilated_8(x)
+            
+        x_concat = torch.cat([b1, b2, b3, b_pool], dim=1)
+        x_concat = F.relu(self.batch_norm(x_concat))
+        
+        # Squeeze-and-Excitation
+        x_se = self.se_block(x_concat)
+        
+        # Residual fusion
+        x = F.relu(x_se + self.residual_proj(residual))
+    
+    # 3. Context Pooling & Classification Head
+    gap = torch.mean(x, dim=-1)
+    gmp = torch.max(x, dim=-1)[0]
+    
+    features = torch.cat([gap, gmp], dim=-1)
+    features = self.dropout(F.relu(self.head_bn(self.head_dense(features))))
+    
+    logits = self.classifier(features)
+    return logits
+```
 Below are the detailed schemas mapping to the standard Inception block, the Dilated variant, and the SE Attention gating used inside both variants:
 
 ```mermaid
@@ -555,36 +649,129 @@ Recommended logging for each run:
 
 ---
 
-## 9. Current XAI Workflow in This Repository
+## 9. Explainable AI (XAI) and Clinical Traceability Workflow
 
-Paper 1 explainability uses `scripts/explain_paper1.py` for the current ContextAwareInceptionTime runtime path.
+Paper 1 explainability uses `scripts/explain_paper1.py` for the current ContextAwareInceptionTime runtime path. It implements two primary post-hoc attribution methods to bridge the gap between deep temporal representations and clinical interpretability: Integrated Gradients (IG) for sample-level feature attribution and 1D Grad-CAM for regional activation mapping.
 
-### 9.1 Command
+### 9.1. Integrated Gradients (1D Temporal)
+
+Integrated Gradients attribute the prediction $f(x)$ of signal $x \in \mathbb{R}^L$ relative to a baseline $x'$ (typically a zero-voltage baseline $x' = 0$).
+
+**Riemann Approximation (Implementation):**
+$$
+IG_i(x) pprox (x_i - x'_i) 	imes \frac{1}{m} \sum_{k=1}^{m} \frac{\partial F(x' + \frac{k}{m} (x - x'))}{\partial x_i}
+$$
+
+```python
+# Pseudo-code Implementation: 1D Integrated Gradients
+def compute_ig(model, signal, target_class, steps=64):
+    baseline = torch.zeros_like(signal)
+    alphas = torch.linspace(0.0, 1.0, steps + 1, device=signal.device)
+    total_gradients = torch.zeros_like(signal)
+    
+    for alpha in alphas:
+        # Generate interpolated path point
+        interpolant = baseline + alpha * (signal - baseline)
+        interpolant.requires_grad_(True)
+        
+        # Forward pass and gradient capture
+        logits = model(interpolant)
+        target_score = logits[:, target_class].sum()
+        total_gradients += torch.autograd.grad(target_score, interpolant)[0].detach()
+        
+    avg_gradients = total_gradients / len(alphas)
+    attributions = (signal - baseline) * avg_gradients
+    
+    return attributions.squeeze(0).cpu().numpy()
+```
+
+### 9.2. 1D Grad-CAM (Targeting Final Inception Block)
+
+Gradient-weighted Class Activation Mapping (Grad-CAM) identifies the spatial (temporal) regions highly active for a specific class decision $c$.
+
+Let $A^{k} \in \mathbb{R}^T$ be the $k$-th feature map activation from the final convolutional layer. Neuron importance weights $\alpha_k^c$:
+
+$$
+\alpha_k^c = \frac{1}{T} \sum_{t=1}^{T} \frac{\partial y^c}{\partial A_t^k}
+$$
+
+$$
+L_{Grad-CAM}^c = \mathrm{ReLU}\left(\sum_{k} \alpha_k^c A^k \right)
+$$
+
+```python
+# Pseudo-code Implementation: 1D Grad-CAM via Hooks
+def compute_gradcam_1d(model, signal, target_class, target_layer):
+    activations, gradients = [], []
+    
+    def fwd_hook(mod, inp, out): activations.append(out)
+    def bwd_hook(mod, gin, gout): gradients.append(gout[0])
+    
+    h1 = target_layer.register_forward_hook(fwd_hook)
+    h2 = target_layer.register_full_backward_hook(bwd_hook)
+    
+    logits = model(signal)
+    logits[:, target_class].sum().backward()
+    
+    A_k = activations[0]
+    grad_A = gradients[0]
+    alpha_k = grad_A.mean(dim=2, keepdim=True)
+    
+    cam = torch.relu((alpha_k * A_k).sum(dim=1)).squeeze(0)
+    
+    h1.remove()
+    h2.remove()
+    return normalize(cam.detach().cpu().numpy())
+```
+
+### 9.3. Branch-Level Attention Summaries
+
+To discover which temporal scales (short, medium, or wide) dominate the inference process, we capture the post-activation mean magnitude of the parallel branches within the Inception modules. 
+
+$$
+E_k = \frac{1}{C \times T} \sum_{c=1}^{C} \sum_{t=1}^{T} |Z_{k}(c, t)|
+$$
+
+```python
+# Pseudo-code Implementation: Intercepting Branch Energies
+def extract_branch_energies(model, signal):
+    energies = {'k9': 0, 'k19': 0, 'k39': 0}
+    handles = []
+
+    def get_energy(branch_name):
+        def hook(mod, inp, out):
+            energies[branch_name] += out.abs().mean().item()
+        return hook
+
+    target_module = model.blocks[-1]
+    handles.append(target_module.branch_9.register_forward_hook(get_energy('k9')))
+    handles.append(target_module.branch_19.register_forward_hook(get_energy('k19')))
+    handles.append(target_module.branch_39.register_forward_hook(get_energy('k39')))
+
+    _ = model(signal)
+    
+    for h in handles: h.remove()
+    return energies
+```
+
+### 9.4 Command and Artifacts
 
 ```bash
 python scripts/explain_paper1.py \
     --model-path checkpoints/paper1_inceptiontime/best_model.pt \
     --config configs/paper1_inceptiontime.yaml \
-    --num-samples-per-class 1
+    --ig-steps 64 \
+    --num-samples-per-class 1 \
+    --data.balance_after_split
 ```
-
-### 9.2 Leakage-Safe Override
-
-To ensure split-first balancing behavior during data loading, append:
-
-```bash
---data.balance_after_split
-```
-
-### 9.3 Artifacts
 
 Outputs are written under `experiments/paper1_inceptiontime/xai/` and include:
-- `signal_attributions.png` (signal + attribution overlays)
-- `branch_summary.png` and `branch_summary.json`
+- `signal_attributions.png` (signal + attribution overlays via IG and Grad-CAM)
+- `branch_summary.png` and `branch_summary.json` (Branch energies)
 - `attributions.npz`
 - per-sample folders and global `summary.json`
 
-### 9.4 Troubleshooting
+### 9.5 Troubleshooting
 
 Common issues and fixes:
 - Empty XAI output folder: verify checkpoint path and class sample availability.
@@ -680,6 +867,7 @@ By fully leveraging the expanded 1080-sample segment scale, the **ContextAwareIn
 *   **Premature Ventricular (V):** 98.62% F1
 *   **Fusion (F):** 89.32% F1 (Historically the most difficult class to separate)
 *   **Unknown (Q):** 99.72% F1
+
 
 
 

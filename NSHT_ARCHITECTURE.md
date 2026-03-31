@@ -97,6 +97,48 @@ An **Evolutionary Fusion** module uses cross-attention and gating to align both 
 
 ---
 
+### 4.3 PyTorch Pseudo-Code Implementation
+
+The structural flow combines the 1D, 2D, and fusion modules through the following algorithmic design:
+
+```python
+# Pseudo-code Implementation: NSHT_Dual_Evo Architecture
+class EvolutionaryFusion(nn.Module):
+    def forward(self, t_features, s_features):
+        # Cross Modal Attention (Spectral queries Temporal)
+        # Querying the spectral texture space for temporal sequence alignment
+        cross_attn_out, _ = self.cross_attn(query=s_features, key=t_features, value=t_features)
+        
+        # Dynamic Feature Gating protects clean temporal morphology from spectral noise
+        pooled_context = torch.cat([t_features.mean(-1), s_features.mean(-1)], dim=-1)
+        gate = torch.sigmoid(self.gate_proj(pooled_context)).unsqueeze(-1)
+        
+        # Gated Residual Fusion
+        fused = self.refine(torch.cat([t_features, cross_attn_out], dim=1))
+        return gate * t_features + (1 - gate) * fused
+
+class NSHT_Dual_Evo(nn.Module):
+    def forward(self, x_1d):
+        # 1. Spectral Stream (2D)
+        # Gradient-optimizable Morlet Wavelet Extraction
+        scalogram = self.wavelet_transform(x_1d) 
+        s = self.spectral_encoder(scalogram) # CBAM/Coordinate Attention Image Hierarchy
+        
+        # 2. Temporal Stream (1D)
+        t = self.inception_stem(x_1d) # Multi-scale temporal
+        t = self.temporal_mhsa(t)     # Global temporal context tracking
+        
+        # 3. Evolutionary Cross-Modal Fusion
+        h_fused = self.fusion(t, s)
+        
+        # 4. Latent Reduction & Classification Head
+        h_pool = torch.cat([self.gap(h_fused), self.gmp(h_fused)], dim=1)
+        logits = self.classifier(h_pool)
+        
+        # Yield the pooled hidden state 'h_pool' for Prototype Consistency Loss during train
+        return logits, h_pool
+```
+
 ## 5. Learnable Wavelet Front-End
 
 ### 5.1 Parametric Morlet Kernel
@@ -201,6 +243,53 @@ $$
 The matrices are then fully reduced to a single vector sequence via a residual-added $1\times1$ convolution block: `Refine(Fuse([T || S_enhanced]) + F_gated)`.
 
 ### 8.3 Why Evolutionary Fusion Instead of Concatenation
+
+### 8.4 Model Forward Pass (Pseudo-code)
+```python
+# Pseudo-code Implementation: NSHT_Dual_Evo Forward Pass
+def forward(self, x_1d, return_hidden=False):
+    # x_1d shape: [Batch, 1, 216]
+    
+    # 1. Learnable Spectral Stream (2D)
+    x_cwt = self.wavelet_transform(x_1d) # Parametric Morlet parameters
+    s = self.spectral_encoder_convs(x_cwt)
+    s = self.spectral_coord_attention(s)
+    s_seq = self.spectral_pool_to_1d(s) # Map back to temporal sequence length
+    
+    # 2. Temporal Stream (1D)
+    t = self.temporal_inception(x_1d)
+    t = self.temporal_mhsa(t) # Multi-Head Self Attention
+    t_seq = self.temporal_proj(t)
+    
+    # 3. Evolutionary Cross-Modal Fusion
+    # Spectral queries (Q) attend to Temporal patterns (K, V)
+    s_enhanced, cross_attn_map = self.fusion.cross_attn(query=s_seq, key=t_seq, value=t_seq)
+    
+    # Dynamic Sigmoid Gating between raw temporal vs attended spectral
+    gate = torch.sigmoid(self.fusion.gate_proj(torch.cat([t_seq.mean(-1), s_seq.mean(-1)], dim=-1)))
+    gate = gate.unsqueeze(-1)
+    
+    fused_seq = gate * t_seq + (1 - gate) * s_enhanced
+    fused_seq = self.fusion.refine_conv(torch.cat([t_seq, s_enhanced], dim=1)) + fused_seq
+    
+    # 4. Pooling & Prototype Distances
+    gap = torch.mean(fused_seq, dim=-1)
+    gmp = torch.max(fused_seq, dim=-1)[0]
+    latent_embedding = torch.cat([gap, gmp], dim=-1)
+    
+    logits = self.classifier(latent_embedding)
+    
+    if self.use_prototypes:
+        # Distance to class prototypes for regularization
+        prototype_dist = torch.cdist(latent_embedding, self.prototypes)
+        if return_hidden:
+            return logits, latent_embedding, prototype_dist
+            
+    if return_hidden:
+        return logits, latent_embedding
+        
+    return logits
+```
 
 1. Dynamic relevance weighting per temporal sequence position.
 2. Protection against spectral noise overriding clean temporal morphology.
@@ -356,6 +445,24 @@ The front-end spectral stream relies on parameterized Morlet wavelets. We extrac
 $$
 \psi_k(t) = \exp\left(-\frac{t^2}{2\sigma_k^2}\right) \cos\left( \omega_{0,k} \frac{t}{\sigma_k} \right)
 $$
+
+```python
+# Pseudo-code Implementation: Extracting Learned Wavelet Parameters
+def extract_wavelet_params(model):
+    wavelet_layer = model.wavelet_transform
+    
+    # Extract the learned tensors from the parameter list
+    sigmas = wavelet_layer.scales.detach().cpu().numpy()
+    frequencies = wavelet_layer.frequencies.detach().cpu().numpy()
+    
+    # Format as list of (sigma, omega_0) pairs for each filter k
+    learned_params = [
+        {"filter": k, "sigma": sigmas[k], "freq_omega0": frequencies[k]} 
+        for k in range(len(sigmas))
+    ]
+    
+    return learned_params
+```
 
 The extracted parameters are visualized as $k$ overlapping wave-packets on a time-frequency scatter plot.
 
