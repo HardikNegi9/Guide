@@ -24,36 +24,132 @@ InceptionTime is a deep learning architecture designed for time series classific
 
 ```mermaid
 flowchart TD
-    A[Input: 1D ECG Segment] --> B[Inception Block 1]
-    B --> C[Inception Block 2]
-    C --> D[Inception Block 3]
-    D --> E[Residual Add]
-    E --> F[Inception Block 4]
-    F --> G[Inception Block 5]
-    G --> H[Inception Block 6]
-    H --> I[Residual Add]
-    I --> J[Global Average Pooling]
-    J --> K[Dense FC Layer]
-    K --> L[Softmax Output]
-    subgraph Inception Block
-        B1[1x1 Conv] 
-        B2[3x1 Conv]
-        B3[5x1 Conv]
-        B4[MaxPool 3x1 -> 1x1 Conv]
-        B1 & B2 & B3 & B4 --> BX[Concat]
-        BX --> BY[SE Block Attention]
+    %% Main Architecture
+    Input[Input: 1D ECG Signal <br> B x 1 x L]
+    
+    subgraph Stem [Stem Integration]
+        Embed[Conv1D k=7, p=3 <br> BatchNorm + ReLU]
+        Pos[Add Learnable Positional Encoding]
     end
-    style B fill:#e0f7fa
-    style C fill:#e0f7fa
-    style D fill:#e0f7fa
-    style F fill:#e0f7fa
-    style G fill:#e0f7fa
-    style H fill:#e0f7fa
-    style E fill:#ffe082
-    style I fill:#ffe082
-    style J fill:#c8e6c9
-    style K fill:#fff9c4
-    style L fill:#ffcdd2
+    
+    subgraph Body [Alternating Inception Blocks]
+         direction TB
+         Block1["Inception Module (Block 1)<br>k ∈ {9, 19, 39}"]
+         Res1(("⊕"))
+         
+         Block2["Dilated Inception (Block 2)<br>k=15, dil ∈ {1, 2, 4, 8}"]
+         Res2(("⊕"))
+         
+         Block3["Inception Module (Block 3)<br>k ∈ {9, 19, 39}"]
+         Res3(("⊕"))
+         
+         Block4["Dilated Inception (Block 4)<br>k=15, dil ∈ {1, 2, 4, 8}"]
+         Res4(("⊕"))
+         
+         Block5["Inception Module (Block 5)<br>k ∈ {9, 19, 39}"]
+         Res5(("⊕"))
+         
+         Block6["Dilated Inception (Block 6)<br>k=15, dil ∈ {1, 2, 4, 8}"]
+         Res6(("⊕"))
+    end
+    
+    Ctx[Context Module <br> (P-Wave, QRS, T-Wave Regional Mean Pooling)]
+    
+    subgraph Head [Classification Head]
+        Pool[Concat: Global Avg Pooling & Global Max Pooling]
+        Dense[Linear(256) -> BatchNorm -> ReLU -> Dropout]
+        Out[Linear -> Logits Output <br> B x 5]
+    end
+    
+    %% Connections Main
+    Input --> Embed --> Pos
+    Pos --> Block1
+    Pos --> |Residual| Res1
+    Block1 --> Res1
+    
+    Res1 --> Block2
+    Res1 --> |Residual| Res2
+    Block2 --> Res2
+    
+    Res2 --> Block3
+    Res2 --> |Residual| Res3
+    Block3 --> Res3
+    
+    Res3 --> Block4
+    Res3 --> |Residual| Res4
+    Block4 --> Res4
+    
+    Res4 --> Block5
+    Res4 --> |Residual| Res5
+    Block5 --> Res5
+    
+    Res5 --> Block6
+    Res5 --> |Residual| Res6
+    Block6 --> Res6
+    
+    Res6 --> Ctx --> Pool --> Dense --> Out
+```
+
+### 3.1.2 Internal Module Schematics
+Below are the detailed schemas mapping to the standard Inception block, the Dilated variant, and the SE Attention gating used inside both variants:
+
+```mermaid
+flowchart LR
+    %% Standard Inception Module Breakout
+    subgraph StandardInception [Standard Inception Module]
+         direction TB
+         SI_In[Input] --> SI_Bneck[1x1 Conv Bottleneck]
+         
+         SI_Bneck --> SI_C1[Conv1D k=9]
+         SI_Bneck --> SI_C2[Conv1D k=19]
+         SI_Bneck --> SI_C3[Conv1D k=39]
+         
+         SI_In --> SI_MaxPool[MaxPool1D k=3] --> SI_PoolConv[Conv1D k=1]
+         
+         SI_C1 --> SI_Concat[Concatenation]
+         SI_C2 --> SI_Concat
+         SI_C3 --> SI_Concat
+         SI_PoolConv --> SI_Concat
+         
+         SI_Concat --> SI_Norm[BatchNorm1D + ReLU]
+         SI_Norm --> SI_SE[SE Block]
+         SI_SE --> SI_Out[Output]
+    end
+    
+    %% Dilated Inception Module Breakout
+    subgraph DilatedInception [Dilated Inception Module]
+         direction TB
+         DI_In[Input] --> DI_Bneck[1x1 Conv Bottleneck]
+         
+         DI_Bneck --> DI_D1[Conv1D k=15, dilation=1]
+         DI_Bneck --> DI_D2[Conv1D k=15, dilation=2]
+         DI_Bneck --> DI_D3[Conv1D k=15, dilation=4]
+         DI_Bneck --> DI_D4[Conv1D k=15, dilation=8]
+         
+         DI_D1 --> DI_Concat[Concatenation]
+         DI_D2 --> DI_Concat
+         DI_D3 --> DI_Concat
+         DI_D4 --> DI_Concat
+         
+         DI_Concat --> DI_Norm[BatchNorm1D + ReLU]
+         DI_Norm --> DI_SE[SE Block]
+         DI_SE --> DI_Out[Output]
+    end
+    
+    %% Common SE Block Details
+    subgraph SEDetails [SE Block: Channel Recalibration]
+        SE_In[Input B x C x L] --> SE_Sq[Squeeze: Global Avg Pool]
+        SE_Sq --> SE_Lin1[Linear: C/16]
+        SE_Lin1 --> SE_ReLU[ReLU]
+        SE_ReLU --> SE_Lin2[Linear: C]
+        SE_Lin2 --> SE_Sigmoid[Sigmoid]
+        SE_Sigmoid --> SE_Mult((⊗))
+        SE_In --> SE_Mult
+        SE_Mult --> SE_Out_Final[Recalibrated Output]
+    end
+    
+    SI_SE -.-> SEDetails
+    DI_SE -.-> SEDetails
 ```
 
 ### 3.2. Inception Module (1D)
@@ -101,10 +197,14 @@ $$
 - Global Average Pooling (GAP)
 - Fully Connected (FC) layer for classification
 
-#### Final Output:
+#### Final Classifier Head Output:
 $$
-\hat{y} = \text{Softmax}(\text{FC}(\text{GAP}(\text{Block}_N(...\text{Block}_1(x)...))))
+h_{pool} = \text{Concat}(\text{GAP}(\text{ContextOutput}), \text{GMP}(\text{ContextOutput}))
 $$
+$$
+logits = \text{Linear}_{5}(\text{Dropout}(\text{ReLU}(\text{BatchNorm}(\text{Linear}_{256}(h_{pool})))))
+$$
+*(Note: Softmax is applied strictly at the loss boundary via CrossEntropyLoss).*
 
 ### 3.5. All Key Equations
 
@@ -120,22 +220,26 @@ $$
 
 **3. Residual Connection:**
 $$
-\mathrm{Block}_j(x) = \mathrm{Inception}_j\left(\mathrm{Block}_{j-1}(x)\right) + x
+\mathrm{Block}_j(x) = \mathrm{ReLU}\big(\mathrm{Inception}_j\left(\mathrm{Block}_{j-1}(x)\right) + \mathcal{P}(x)\big)
 $$
+*(where $\mathcal{P}$ is an identity connection or $1\times 1$ conv to match dimensions)*.
 
 **4. Global Average Pooling:**
 $$
 \mathrm{GAP}(x) = \frac{1}{L} \sum_{t=1}^L x_t
 $$
 
-**5. Fully Connected Layer:**
+**5. Classifier Dense Network:**
 $$
-z = Wx + b
+z = \mathrm{Linear}_{256}(\mathrm{Concat}(\mathrm{GAP}(x), \mathrm{GMP}(x)))
+$$
+$$
+logits = \mathrm{Linear}_{5}(\mathrm{Dropout}(\mathrm{ReLU}(\mathrm{BatchNorm}(z))))
 $$
 
-**6. Softmax Output:**
+**6. Softmax (Handled entirely by CrossEntropyLoss):**
 $$
-\hat{y}_c = \frac{\exp(z_c)}{\sum_{k=1}^C \exp(z_k)}
+p_c = \frac{\exp(logits_c)}{\sum_{k=1}^C \exp(logits_k)}
 $$
 
 **7. Cross-Entropy Loss:**

@@ -108,10 +108,13 @@ python -m src.data.download --create-raw --mode incart
 python -m src.data.download --create-raw --mode combined
 ```
 
-### 2. Create Balanced Datasets (SMOTE or ADASYN)
+### 2. Create RAW and Balanced Datasets
 
-```bash
-# Create balanced dataset from combined RAW data (default: 15,000 samples/class)
+Extract **1080-length segments** (standard in the pipeline) to produce highly effective input data containing vital RR-interval temporal context:     
+# Create unbalanced raw numpy arrays
+python -m src.data.download --create-raw --mode all
+
+# Create balanced dataset from combined RAW data (SMOTE, default: 15,000 samples/class)
 python -m src.data.download --create-balanced --mode combined
 
 # Create balanced dataset from MIT-BIH only
@@ -149,11 +152,6 @@ This creates:
 If `--balancing-method adasyn` is used, filenames end with `_adasyn.npy`.
 
 **Note:** Requires RAW datasets to exist first (`--create-raw`).
-
-**Alternative:** Use standalone script for more options:
-```bash
-python create_balanced_rpeak_segments.py --datasets both --samples-per-class 15000 --no-visual
-```
 
 **Runtime sampling** can further limit data via `ECGDataModule`:
 

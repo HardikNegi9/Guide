@@ -66,11 +66,9 @@ NSHT targets these with:
 | Temporal encoder | RNN or basic 1D CNN | **Inception multi-scale + residuals** |
 | Spectral encoder | Standard 2D CNN | **Lightweight CWT + optimized blocks** |
 | Modal fusion | Static concatenation | **Cross-modal attention (1D queries 2D)** |
-| Objective | CE loss only | **CE + prototype consistency joint loss** |
-| Low-frequency path | Implicit in shared layers | **Explicit P-wave specialized head** |
-| Runtime class | N/A | `src/models/nsht_dual_evo.py` |
-| Config reference | N/A | `configs/paper3_nsht.yaml` |
-| Training stability | Standard AMP | **BF16 mixed precision + TF32** |
+| Latent structure | CE loss only | **CE + prototype consistency joint loss** |
+| Low-frequency modeling | Handcrafted/Implicit | **Explicit multi-scale 1D temporal kernels** |
+| Training stability | Standard AMP | **BF16 AMP + TF32** |
 | Evaluation policy | Often global balancing | **Split-first option (leakage-safe)** |
 | Explainability | Post-hoc only | **Structured XAI outputs (wavelet, attention, streams)** |
 | XAI runtime | N/A | `scripts/explain_paper3.py` |
@@ -87,14 +85,15 @@ NSHT targets these with:
 
 Input beat drives two synchronized representations:
 
-1. Temporal branch: learnable-wavelet-enhanced 1D encoder.
-2. Spectral branch: 2D encoder over time-frequency transform.
+1. **Temporal branch:** 1D Conv → Multi-Scale Inception Block → Temporal MHSA
+2. **Spectral branch:** Learnable Wavelet Front-End → Dual Coordinate Attention CNN Block
 
-Fusion module aligns both branches into a shared latent vector for classification.
+An **Evolutionary Fusion** module uses cross-attention and gating to align both branches into a shared latent vector for pooling and classification.
 
-### 4.2 NSHT-Tri (Tri Stream)
+### 4.2 Legacy NSHT-Tri
 
-Adds a third branch with explicit handcrafted/clinical-statistical descriptors projected by MLP before late fusion.
+> [!WARNING]
+> Prior drafts included an `NSHT-Tri` variant that added a third branch for handcrafted statistical descriptors. This concept is structurally obsolete and fully superseded by the expressive power of the dual-stream feature fusion. Ensure future manuscript claims refer strictly to dual-stream `NSHT_Dual_Evo`.
 
 ---
 
@@ -132,11 +131,11 @@ Compared to fixed wavelet transforms, this front-end can retune to dataset-speci
 
 ## 6. Temporal Encoder (1D Stream)
 
-The temporal stream uses multi-scale 1D feature extraction blocks (Inception-like variants in the model family) to preserve timing-sensitive morphology:
+The temporal encoder natively captures morphology and timing-sensitive cues sequentially:
 
-- QRS width and slope dynamics.
-- P-wave and PR-pattern cues.
-- Beat-level phase relationships around R-peak anchors.
+1. **Initial 1D Convolution** for base feature projection.
+2. **Multi-scale Inception Block** (Kernel sizes $k=9, 19, 39$) to natively capture varying frequency resolutions (such as wide low-frequency P-waves and sharp high-frequency QRS complexes simultaneously).
+3. **Temporal Attention** (Multi-Head Self-Attention over the 1D sequence) to learn global beat-level phase relationships.
 
 Output sequence feature map:
 
@@ -150,42 +149,33 @@ $$
 
 ### 7.1 Spectral Representation
 
-A beat-derived time-frequency image is generated (scalogram/spectral map path depending on configured implementation), then passed through a compact 2D CNN stack:
+The spectral path encodes time-frequency texture and harmonic distribution cues from the active `AdaptiveMorletWavelet` layer output.
+
+The subsequent structure applies lightweight hierarchical processing:
+1. Primary `Conv2D` block.
+2. `Coordinate Attention` mechanism to capture direction-aware cross-channel relationships.
+3. Spatial downsampling `Conv2D` block (stride 2).
+4. Secondary `Coordinate Attention` block.
+5. Spatial reduction via `AdaptiveAvgPool2D(1, None)` to a 1D sequence mapping out the temporal distribution of spectral density.
+
+Representative output interpolated to matching temporal sequence length $L_t$:
 
 $$
-S\in\mathbb{R}^{B\times C_s\times H_s\times W_s}
+S\in\mathbb{R}^{B\times C_s\times L_t}
 $$
-
-Flattened or pooled spectral tokens/features become key-value context for fusion.
-
-### 7.2 Low-Frequency Emphasis Hooks
-
-The architecture family includes dedicated low-frequency feature capture pathways to preserve atrial and slow-wave morphology signals linked to difficult class boundaries.
 
 ---
 
-## 8. P-Wave and Low-Frequency Specialized Heads
+## 8. Evolutionary Fusion Loop
 
-Dedicated low-frequency modules are included to improve discrimination in classes where subtle atrial timing and morphology differ (especially N/S boundaries).
+### 8.1 Core Operation
 
-A generic specialized convolutional head can be represented as:
+To combine the 1D and 2D insights, an `EvolutionaryFusion` block aligns evidence dynamically.
 
-$$
-P=\phi_{\mathrm{pw}}(x),\quad P\in\mathbb{R}^{B\times C_p\times L_p}
-$$
-
-and injected into final fusion vector after pooling/projection.
-
----
-
-## 9. Cross-Modal Attention Fusion
-
-### 9.1 Core Operation
-
-Let temporal features be query source and spectral features be key/value source:
+Let temporal features be Key/Value source and spectral features be Query source:
 
 $$
-Q=W_Q T,\ K=W_K S',\ V=W_V S'
+Q=W_Q S',\ K=W_K T,\ V=W_V T
 $$
 
 $$
@@ -193,16 +183,28 @@ A=\mathrm{softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}}\right)
 $$
 
 $$
-F_{\mathrm{cm}}=AV
+S_{\mathrm{enhanced}}=AV
 $$
 
-where $S'$ is reshaped spectral context.
+### 8.2 Dynamic Gated Residual
 
-### 9.2 Why Attention Instead of Concatenation
+To protect the original morphological integrity from noisy spectral queries, a dynamic gate is constructed over the stream global means to form a convex combination:
 
-1. Dynamic relevance weighting per temporal position.
-2. Better alignment of morphology events with spectral signatures.
-3. Greater interpretability via attention maps.
+$$
+g = \sigma( W_{\mathrm{gate}} [ \mathrm{Mean}(T) \;\|\; \mathrm{Mean}(S) ] )
+$$
+
+$$
+F_{\mathrm{gated}} = g \cdot T + (1-g) \cdot S_{\mathrm{enhanced}}
+$$
+
+The matrices are then fully reduced to a single vector sequence via a residual-added $1\times1$ convolution block: `Refine(Fuse([T || S_enhanced]) + F_gated)`.
+
+### 8.3 Why Evolutionary Fusion Instead of Concatenation
+
+1. Dynamic relevance weighting per temporal sequence position.
+2. Protection against spectral noise overriding clean temporal morphology.
+3. Expressive latent structuring enabling deep extraction without manual hooks.
 
 ---
 
@@ -234,40 +236,24 @@ with schedule $\lambda(t)$ typically increasing through training to avoid early 
 
 ---
 
-## 11. NSHT-Tri Statistical Stream (Optional Extension)
+## 10. Legacy Architecture Concept (NSHT-Tri)
 
-**Note:** NSHT-Tri is a historical extension variant and is **not active** in the current NSHT_Dual_Evo codebase deployment. This section documents the design for reference only.
-
-If enabled, NSHT-Tri would add handcrafted/statistical descriptors (e.g., moments, entropy-family, rhythm descriptors):
-
-Let stats vector be $s\in\mathbb{R}^{d_s}$ projected to latent dimension $d$:
-
-$$
-h_s = \phi_s(s)\in\mathbb{R}^{d}
-$$
-
-Tri-stream fusion:
-
-$$
-h_{\mathrm{tri}}=[h_{\mathrm{cm}}\,\|\,h_{\mathrm{pw}}\,\|\,h_s]
-$$
-
-This would then feed to classification head and optional prototype objective. **Current deployment uses dual-stream only.**
+> [!WARNING]
+> Prior theoretical drafts included an `NSHT-Tri` variant that added a third branch for handcrafted statistical descriptors. **This tri-stream concept is structurally obsolete.** The current `NSHT_Dual_Evo` effectively captures all desired baseline and rhythm statistical priors end-to-end via the `EvolutionaryFusion` loops and robust temporal MHSA, keeping parameter footprint low without requiring manual engineering.
 
 ---
 
-## 12. Shape Trace and Branch Interfaces
+## 11. Shape Trace and Branch Interfaces
 
 Representative flow (batch size $B$):
 
 1. Raw beat: $B\times1\times216$.
 2. Wavelet front-end output: $B\times K\times216$.
 3. Temporal encoded map: $B\times C_t\times L_t$.
-4. Spectral encoded map: $B\times C_s\times H_s\times W_s$.
-5. Cross-modal fused representation: $B\times d$.
-6. Optional P-wave/low-frequency vector: $B\times d_p$.
-7. Optional stats vector (tri): $B\times d_s'$.
-8. Logits: $B\times5$.
+4. Spectral encoded map: $B\times C_s\times L_t$.
+5. Cross-modal fused sequence: $B\times d\times L_t$.
+6. Pooled Latent vector (GAP + GMP): $B\times 2d$.
+7. Logits: $B\times5$.
 
 All branch projections must be dimensionally aligned before concatenation/attention.
 
@@ -454,32 +440,43 @@ This supports exact reruns and auditability.
 
 ```mermaid
 flowchart TD
-  A[ECG Beat Input] --> B[Learnable Wavelet Front-End]
-  A --> C[Spectral Transform Path]
-  A --> D[P-Wave Low-Frequency Head]
+  A[ECG Beat 1D] --> B1[Temporal Stream]
+  A --> B2[Spectral Stream]
 
-  B --> E[Temporal Encoder 1D]
-  C --> F[Spectral Encoder 2D]
+  subgraph Temporal Stream
+    B1 --> C1[Conv1D + Base Features]
+    C1 --> C2[Multi-Scale Inception Block \n k=9, 19, 39]
+    C2 --> C3[Temporal MHSA Self-Attention]
+    C3 --> C4[Project to Hidden Dim]
+  end
 
-  E --> G[Cross-Modal Attention Fusion]
-  F --> G
+  subgraph Spectral Stream
+    B2 --> D1[Adaptive Morlet Wavelet\nLearnable CWT]
+    D1 --> D2[Conv2D Block]
+    D2 --> D3[Coordinate Attention]
+    D3 --> D4[Conv2D Block]
+    D4 --> D5[Coordinate Attention]
+    D5 --> D6[Reduce to 1D + Project]
+  end
 
-  G --> H[Fused Latent Vector]
-  D --> I[Low-Frequency Vector]
+  C4 --> E[Evolutionary Fusion]
+  D6 --> E
 
-  H --> J[Concat Features]
-  I --> J
+  subgraph Evolutionary Fusion
+    E --> F1[Cross-Attention\nSpectral attends Temporal]
+    E --> F2[Feature Gating\nSigmoid Gate on Pooled Streams]
+    F1 --> F3[Combine Streams]
+    F2 --> F3[Residual Gated Sum]
+  end
 
-  J --> K{NSHT-Tri Enabled}
-  K -->|No| L[Classifier Head]
-  K -->|Yes| M[Stats Feature Projector]
-  M --> N[Tri-Stream Concat]
-  N --> L
-
-  L --> O[5-Class Logits]
-  O --> P[Softmax]
-  J --> Q[Prototype Head]
-  Q --> R[Prototype Loss]
+  F3 --> G[Global Pooling \n GAP + GMP]
+  G --> H[Classifier Head \n Linear + Dropout]
+  H --> I[5-Class Logits]
+  
+  G --> J{use_prototypes?}
+  J -->|Yes| K[Prototype Projector]
+  K --> L[Latent Embedding vs Prototypes]
+  L --> M[Prototype Consistency Loss]
 ```
 
 ### 21.2 Data Integrity and Evaluation Flow

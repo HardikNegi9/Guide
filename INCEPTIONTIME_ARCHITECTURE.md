@@ -38,47 +38,134 @@ with split policy constraints to avoid leakage when configured with split-first 
 
 ```mermaid
 flowchart TD
-    A[Input Beat Bx1xL] --> B[Stem Conv + Norm + Activation]
-    B --> C[Inception Block 1]
-    C --> D[Inception Block 2]
-    D --> E[Inception Block 3]
-    E --> F[Residual Add 1]
-    F --> G[Inception Block 4]
-    G --> H[Inception Block 5]
-    H --> I[Inception Block 6]
-    I --> J[Residual Add 2]
-    J --> K[Global Average Pooling]
-    K --> L[Dropout]
-    L --> M[Linear Head]
-    M --> N[Softmax]
-
-    subgraph InceptionBlock[Inception Block Internal Structure]
-        X1[1x1 Bottleneck]
-        X2[Conv k=11 branch]
-        X3[Conv k=21 branch]
-        X4[Conv k=41 branch]
-        X5[MaxPool + 1x1 branch]
-        X2 --> X6[Concat]
-        X3 --> X6
-        X4 --> X6
-        X5 --> X6
-        X6 --> X7[BatchNorm + GELU/ReLU]
-        X7 --> X8[SE Block]
+    %% Main Architecture
+    Input[Input: 1D ECG Signal <br> B x 1 x L]
+    
+    subgraph Stem [Stem Integration]
+        Embed[Conv1D k=7, p=3 <br> BatchNorm + ReLU]
+        Pos[Add Learnable Positional Encoding]
     end
+    
+    subgraph Body [Alternating Inception Blocks]
+         direction TB
+         Block1["Inception Module (Block 1)<br>k ∈ {9, 19, 39}"]
+         Res1(("⊕"))
+         
+         Block2["Dilated Inception (Block 2)<br>k=15, dil ∈ {1, 2, 4, 8}"]
+         Res2(("⊕"))
+         
+         Block3["Inception Module (Block 3)<br>k ∈ {9, 19, 39}"]
+         Res3(("⊕"))
+         
+         Block4["Dilated Inception (Block 4)<br>k=15, dil ∈ {1, 2, 4, 8}"]
+         Res4(("⊕"))
+         
+         Block5["Inception Module (Block 5)<br>k ∈ {9, 19, 39}"]
+         Res5(("⊕"))
+         
+         Block6["Dilated Inception (Block 6)<br>k=15, dil ∈ {1, 2, 4, 8}"]
+         Res6(("⊕"))
+    end
+    
+    Ctx[Context Module <br> (P-Wave, QRS, T-Wave Regional Mean Pooling)]
+    
+    subgraph Head [Classification Head]
+        Pool[Concat: Global Avg Pooling & Global Max Pooling]
+        Dense[Linear(256) -> BatchNorm -> ReLU -> Dropout]
+        Out[Linear -> Logits Output <br> B x 5]
+    end
+    
+    %% Connections Main
+    Input --> Embed --> Pos
+    Pos --> Block1
+    Pos --> |Residual| Res1
+    Block1 --> Res1
+    
+    Res1 --> Block2
+    Res1 --> |Residual| Res2
+    Block2 --> Res2
+    
+    Res2 --> Block3
+    Res2 --> |Residual| Res3
+    Block3 --> Res3
+    
+    Res3 --> Block4
+    Res3 --> |Residual| Res4
+    Block4 --> Res4
+    
+    Res4 --> Block5
+    Res4 --> |Residual| Res5
+    Block5 --> Res5
+    
+    Res5 --> Block6
+    Res5 --> |Residual| Res6
+    Block6 --> Res6
+    
+    Res6 --> Ctx --> Pool --> Dense --> Out
+```
 
-    style C fill:#e3f2fd
-    style D fill:#e3f2fd
-    style E fill:#e3f2fd
-    style G fill:#e3f2fd
-    style H fill:#e3f2fd
-    style I fill:#e3f2fd
-    style F fill:#f1f8e9
-    style J fill:#f1f8e9
-    style X1 fill:#fff9c4
+### 3.1.2 Internal Module Schematics
+```mermaid
+flowchart LR
+    %% Standard Inception Module Breakout
+    subgraph StandardInception [Standard Inception Module]
+         direction TB
+         SI_In[Input] --> SI_Bneck[1x1 Conv Bottleneck]
+         
+         SI_Bneck --> SI_C1[Conv1D k=9]
+         SI_Bneck --> SI_C2[Conv1D k=19]
+         SI_Bneck --> SI_C3[Conv1D k=39]
+         
+         SI_In --> SI_MaxPool[MaxPool1D k=3] --> SI_PoolConv[Conv1D k=1]
+         
+         SI_C1 --> SI_Concat[Concatenation]
+         SI_C2 --> SI_Concat
+         SI_C3 --> SI_Concat
+         SI_PoolConv --> SI_Concat
+         
+         SI_Concat --> SI_Norm[BatchNorm1D + ReLU]
+         SI_Norm --> SI_SE[SE Block]
+         SI_SE --> SI_Out[Output]
+    end
+    
+    %% Dilated Inception Module Breakout
+    subgraph DilatedInception [Dilated Inception Module]
+         direction TB
+         DI_In[Input] --> DI_Bneck[1x1 Conv Bottleneck]
+         
+         DI_Bneck --> DI_D1[Conv1D k=15, dilation=1]
+         DI_Bneck --> DI_D2[Conv1D k=15, dilation=2]
+         DI_Bneck --> DI_D3[Conv1D k=15, dilation=4]
+         DI_Bneck --> DI_D4[Conv1D k=15, dilation=8]
+         
+         DI_D1 --> DI_Concat[Concatenation]
+         DI_D2 --> DI_Concat
+         DI_D3 --> DI_Concat
+         DI_D4 --> DI_Concat
+         
+         DI_Concat --> DI_Norm[BatchNorm1D + ReLU]
+         DI_Norm --> DI_SE[SE Block]
+         DI_SE --> DI_Out[Output]
+    end
+    
+    %% Common SE Block Details
+    subgraph SEDetails [SE Block: Channel Recalibration]
+        SE_In[Input B x C x L] --> SE_Sq[Squeeze: Global Avg Pool]
+        SE_Sq --> SE_Lin1[Linear: C/16]
+        SE_Lin1 --> SE_ReLU[ReLU]
+        SE_ReLU --> SE_Lin2[Linear: C]
+        SE_Lin2 --> SE_Sigmoid[Sigmoid]
+        SE_Sigmoid --> SE_Mult((⊗))
+        SE_In --> SE_Mult
+        SE_Mult --> SE_Out_Final[Recalibrated Output]
+    end
+    
+    SI_SE -.-> SEDetails
+    DI_SE -.-> SEDetails
 ```
 
 **Architecture Components:**
-- **Inception Blocks** (light blue): Multi-scale temporal feature extraction with 11/21/41 kernel sizes.
+- **Inception Blocks** (light blue): Multi-scale temporal feature extraction with 9/19/39 kernel sizes.
 - **Residual Connections** (light green): Gradient flow stabilization across deep 1D stacks.
 - **Bottleneck Projection** (light yellow): Efficiency novelty for ECG compute optimization.
 
@@ -92,7 +179,7 @@ flowchart TD
 | Stem processing | Direct conv | Adaptive context prepend |
 | Block arrangement | 6 Inception blocks | 3-2-1 staggered residual |
 | Bottleneck emphasis | Standard channel mix | **Enhanced for ECG efficiency** |
-| Multi-scale kernels | {9, 19, 39} | **{11, 21, 41}** (ECG-optimized) |
+| Multi-scale kernels | {9, 19, 39} | **{9, 19, 39}** (ECG-optimized, code default) |
 | Residual integration | Optional | **Mandatory at two stages** |
 | Runtime reference | `inception_time.py` | `models/inception_time.py` |
 
@@ -128,9 +215,9 @@ Purpose:
 Three temporal branches and one pooled branch:
 
 $$
-z_{11} = \mathrm{Conv1D}_{11}(x_b), \quad
-z_{21} = \mathrm{Conv1D}_{21}(x_b), \quad
-z_{41} = \mathrm{Conv1D}_{41}(x_b)
+z_{9} = \mathrm{Conv1D}_{9}(x_b), \quad
+z_{19} = \mathrm{Conv1D}_{19}(x_b), \quad
+z_{39} = \mathrm{Conv1D}_{39}(x_b)
 $$
 
 $$
@@ -140,7 +227,7 @@ $$
 Concatenation and normalization:
 
 $$
-z_{concat} = \phi\big(\mathrm{BN}(\mathrm{Concat}(z_{11}, z_{21}, z_{41}, z_{pool}))\big)
+z_{concat} = \phi\big(\mathrm{BN}(\mathrm{Concat}(z_{9}, z_{19}, z_{39}, z_{pool}))\big)
 $$
 
 ### 4.3.1 Squeeze-and-Excitation (SE) Block
@@ -158,18 +245,20 @@ $$
 For selected block intervals:
 
 $$
-z_{res} = z + \mathcal{P}(x_{skip})
+z_{res} = \mathrm{ReLU}(z + \mathcal{P}(x_{skip}))
 $$
 
 where $\mathcal{P}$ is optional projection if channel mismatch exists.
 
 ### 4.5 Head
-Global temporal pooling and classifier:
+Global temporal pooling and classifier head:
 
 $$
-h = \mathrm{GAP}(z_{res}), \quad
-\tilde{h} = \mathrm{Dropout}(h), \quad
-\hat{y} = \mathrm{Softmax}(W\tilde{h}+b)
+h = \mathrm{Concat}(\mathrm{GAP}(z_{res}),\ \mathrm{GMP}(z_{res}))
+$$
+
+$$
+\hat{y} = \mathrm{Linear}_{num\_classes}(\mathrm{Dropout}(\mathrm{ReLU}(\mathrm{BatchNorm}(\mathrm{Linear}_{256}(h)))))
 $$
 
 ---
@@ -196,9 +285,9 @@ Notes:
 
 ## 6. Receptive Field Perspective
 In ECG, discriminative cues can be short-duration spikes (QRS) and longer morphology context (P/T-wave relationships). Multi-kernel branches provide multi-scale temporal capture:
-- $k=11$ branch: local morphology,
-- $k=21$ branch: meso-scale context,
-- $k=41$ branch: longer rhythm-local structure.
+- $k=9$ branch: local morphology,
+- $k=19$ branch: meso-scale context,
+- $k=39$ branch: longer rhythm-local structure.
 
 Effective representation is the fused sum of these scale-specific projections after concatenation and normalization.
 

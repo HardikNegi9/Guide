@@ -88,8 +88,8 @@ $$
 Practical settings:
 
 - Wavelet: Morlet (`morl`).
-- Scales: `np.arange(1,128)`.
-- Native shape near $127\times216$ then resized to $224\times224$.
+- Scales: `np.arange(1,65)`.
+- Native shape $64\times216$, then interpolated to $224\times224$ (`img_size`).
 - Channel format: 3-channel replication for vision backbones.
 
 ---
@@ -117,7 +117,8 @@ Practical settings:
 
 ## 5. Legacy Architecture Narrative (EfficientNet + Transformer)
 
-This section captures the original conceptual architecture used in previous writeups.
+> [!WARNING]
+> This section captures the original conceptual architecture used in previous theoretical writeups limit testing. **The Vision Transformer (ViT) architecture is NO LONGER ACTIVE.** The current state-of-the-art runtime applies the multi-scale, purely convolutional `AttentionEfficientNet` mechanism defined below.
 
 ### 5.1 Backbone and Projection
 
@@ -165,19 +166,21 @@ Use CLS output with stacked MLP to logits in $\mathbb{R}^{5}$.
 
 ## 6. Current Runtime Architecture (AttentionEfficientNet + CBAM)
 
-The repository now executes an attention-augmented CNN path for Paper 2 training/evaluation and XAI.
+The repository now executes a multi-scale attention-augmented CNN path for Paper 2 training, evaluation, and XAI.
 
 ### 6.1 High-Level Computation
 
+The backbone extracts pyramidal features by tapping hierarchical outputs at block indices (e.g., scales 2, 3, and 4 in EfficientNet-B0), generating synchronized multi-scale context mappings. 
+
 $$
-\hat{y}=g_\phi\!\left(\mathrm{CBAM}_{\ell}\big(\mathrm{EffNet}_{\ell}(\Phi_{\mathrm{CWT}}(x))\big)\right)
+\hat{y}=g_\phi\!\left(\mathrm{FusionCBAM}\left( \text{Concat}\Big|_{i=2}^{4} \Big[ \mathrm{Upsample}\big( \mathrm{CBAM}_{i}\big(\mathrm{EffNet}_{i}(\Phi_{\mathrm{CWT}}(x))\big)\big) \Big] \right)\right)
 $$
 
 Where:
 
-- $\mathrm{EffNet}_{\ell}$ are hierarchical CNN blocks.
-- $\mathrm{CBAM}_{\ell}$ are channel + spatial attention refinements.
-- $g_\phi$ is the classifier head.
+- $\mathrm{EffNet}_{i}$ represents the hierarchical CNN output at scale $i$.
+- $\mathrm{CBAM}_{i}$ explicitly refines each scale output independently.
+- $g_\phi$ is the final global-pooled dense classifier head.
 
 ### 6.2 Channel Attention
 
@@ -210,10 +213,12 @@ This produces interpretable attention maps aligned with Paper 2 XAI artifacts.
 Representative tensor flow (batch size $B$):
 
 1. Input scalogram: $B\times3\times224\times224$.
-2. Backbone stages: progressively downsampled high-channel maps.
-3. Attention-refined final map: $B\times C_f\times h\times w$.
-4. Global pooling: $B\times C_f$.
-5. Classifier output: $B\times5$.
+2. Backbone multi-scale blocks: 3 parallel downsampled feature maps $F_2, F_3, F_4$.
+3. Per-scale attention: CBAM applied to each $F_i$ independently.
+4. Scale fusion: $F_3, F_4$ bilinearly upsampled to matches dim of $F_2$, then concatenated.
+5. Fused Attention: Processed through 512-channel Fusion CBAM.
+6. Global pooling: $B\times 1024$ (GAP and GMP concatenated).
+7. Classifier output: $B\times5$.
 
 Contract guarantees:
 
@@ -526,16 +531,26 @@ This ensures any metric can be traced to exact code and data state.
 
 ```mermaid
 flowchart TD
-  A[ECG Beat 1D] --> B[CWT Morlet Scalogram]
-  B --> C[Resize 224x224 and Normalize]
-  C --> D[3-Channel Tensor]
-  D --> E[AttentionEfficientNet Backbone]
-  E --> F[CBAM Channel Attention]
-  F --> G[CBAM Spatial Attention]
-  G --> H[Global Pooling]
-  H --> I[Classifier Head]
-  I --> J[5-Class Logits]
-  J --> K[Softmax Probabilities]
+  A[1D ECG Signal] --> B[CWT Scalogram Layer]
+  B --> C[ImageNet Normalized 3x224x224 Image]
+  
+  C --> D[EfficientNet Backbone\nFeature Extractor]
+  
+  D -->|Scale 1| E1[CBAM Module 1]
+  D -->|Scale 2| E2[CBAM Module 2]
+  D -->|Scale 3| E3[CBAM Module 3]
+  
+  E1 --> F[Bilinear Upsampling & Concatenation]
+  E2 --> F
+  E3 --> F
+  
+  F --> G[Fusion Block\nConv2D + BatchNorm + ReLU]
+  G --> H[Fusion CBAM Module]
+  
+  H --> I[Global Pooling\nGAP + GMP]
+  I --> J[Classifier Head\nLinear Layers + Dropout]
+  
+  J --> K[5-Class Logits]
 ```
 
 ### 17.2 Data and Methodology Flow
