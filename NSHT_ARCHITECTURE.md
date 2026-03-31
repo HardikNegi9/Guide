@@ -345,13 +345,85 @@ Key innovations in **NSHT_Dual_Evo** (current deployment):
 
 ---
 
-## 17. Explainability and Artifact Protocol
+## 17. Multi-modal Explainable AI (XAI) Protocol (Paper 3)
+
+The NSHT architecture requires specialized XAI techniques to decouple its dual-stream processing and metric learning latent spaces.
+
+### 17.1. Learnable Wavelet Parameter Profiling
+
+The front-end spectral stream relies on parameterized Morlet wavelets. We extract the optimized scales $\sigma_k$ and center frequencies $\omega_{0,k}$ for visual tracking to see how the network diverged from initialization.
+
+$$
+\psi_k(t) = \exp\left(-\frac{t^2}{2\sigma_k^2}\right) \cos\left( \omega_{0,k} \frac{t}{\sigma_k} \right)
+$$
+
+The extracted parameters are visualized as $k$ overlapping wave-packets on a time-frequency scatter plot.
+
+### 17.2. Cross-Attention Energy Profiling
+
+In the `Evolutionary Fusion` layer, the 2D Spectral features $S \in \mathbb{R}^{d \times L_s}$ act as Keys/Values, and the 1D Temporal features $T \in \mathbb{R}^{d \times L_t}$ act as Queries.
+
+The attention probability matrix $A \in \mathbb{R}^{L_t \times L_s}$ reveals exactly which temporal steps requested which spectral frequencies:
+
+$$
+A = \mathrm{Softmax}\left( \frac{T^T W_Q^T W_K S}{\sqrt{d_k}} \right)
+$$
+
+```python
+# Pseudo-code Implementation: Cross-Attention Map Intercept
+def extract_cross_attention(model, x_1d):
+    activations = {}
+
+    def get_attention(name):
+        def hook(model, input, output):
+            # output[1] contains the unprojected attention weights
+            activations[name] = output[1].detach().cpu().numpy()
+        return hook
+
+    # Register hook on the MultiheadAttention module inside the fusion block
+    handle = model.fusion.cross_attn.register_forward_hook(get_attention('cross_attn'))
+    
+    _ = model(x_1d)
+    
+    attention_map = activations['cross_attn']   # Shape: [Batch, L_t, L_s]
+    handle.remove()
+    
+    return attention_map
+```
+
+### 17.3. Prototype Distance Latent Analysis (t-SNE)
+
+If $\lambda > 0$, the $N \times 192$ dimensional latent vectors $h_i$ are clustered around class-specific prototypes $P_c \in \mathbb{R}^{192}$.
+We extract all $h_i$ for the test set along with the $5$ geometric prototypes $P_c$, and project them down to 2D using t-SNE for a unified manifold inspection.
+
+$$
+\text{Logit}_c = ||h_i - P_c||_2^2 \times W_{scale}
+$$
+
+```python
+# Pseudo-code Implementation: Prototype Latent Extraction
+def extract_prototypes_and_latents(model, test_loader):
+    model.eval()
+    latents, labels = [], []
+    
+    with torch.no_grad():
+        for batch_x, batch_y in test_loader:
+            _, hidden = model(batch_x, return_hidden=True)
+            latents.append(hidden.cpu().numpy())
+            labels.append(batch_y.cpu().numpy())
+            
+    latents_np = np.concatenate(latents, axis=0)      # Shape: [N, 192]
+    labels_np = np.concatenate(labels, axis=0)
+    
+    # Extract the geometric prototypes
+    prototypes = model.prototype_layer.prototypes.detach().cpu().numpy() # Shape: [5, 192]
+    
+    return latents_np, labels_np, prototypes
+```
+
+### 17.4. Execution Commands
 
 Active script:
-
-- `scripts/explain_paper3.py`
-
-Command:
 
 ```bash
 python scripts/explain_paper3.py \
@@ -360,32 +432,13 @@ python scripts/explain_paper3.py \
   --num-samples-per-class 1
 ```
 
-Optional split-first override:
-
-```bash
-python scripts/explain_paper3.py \
-  --model-path checkpoints/paper3_nsht/best_model.pt \
-  --config configs/paper3_nsht.yaml \
-  --num-samples-per-class 1 \
-  --data.balance_after_split
-```
+*(Note: Use `--data.balance_after_split` if required by the data ingestion protocol).*
 
 Typical artifact set under `experiments/paper3_nsht/xai/`:
-
-- `wavelet_params.png`.
-- `cross_attention.png`.
-- `stream_contributions.png`.
-- `arrays.npz`.
-- per-sample and global `summary.json`.
-- optional prototype visualization exports.
-
-Prototype extraction utility:
-
-```bash
-python scripts/extract_nsht_prototypes.py \
-  --model-path checkpoints/paper3_nsht/best_model.pt \
-  --config configs/paper3_nsht.yaml
-```
+- `wavelet_params.png`: The distributions of the learned $\sigma$ and $\omega_0$ bounds.
+- `cross_attention.png`: The temporal-vs-spectral activation heatmap matrix $A$.
+- `stream_contributions.png`: Dynamic Sigmoid gating ratios charting $T$ versus $S$ reliance.
+- `prototype_tsne.png` (if enabled via config): 2D manifold comparing cluster compactness against geometric centroids.
 
 ---
 

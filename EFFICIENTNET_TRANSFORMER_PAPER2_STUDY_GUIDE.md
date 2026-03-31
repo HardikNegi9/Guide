@@ -1,4 +1,4 @@
-# Paper 2 Technical Monograph: EfficientNet Scalogram Pipeline (Legacy Hybrid Narrative vs Current AttentionEfficientNet Runtime)
+﻿# Paper 2 Technical Monograph: EfficientNet Scalogram Pipeline (Legacy Hybrid Narrative vs Current AttentionEfficientNet Runtime)
 
 ## 1. Scope and Positioning
 
@@ -56,20 +56,35 @@ This path trades exact temporal localization for richer local frequency-texture 
 
 ## 4. End-to-End Data Path
 
-### 4.1 Beat Preparation
+### 2.1 Preprocessing Phase Architecture (Modular Codebase Reality)
 
-1. Records are parsed from configured source mode (MIT-BIH, INCART, combined).
-2. Beats are segmented around R-peak anchors.
-3. Labels are normalized to the 5-class AAMI-style mapping used in repository training.
+In strict adherence to the repository's src/data/download.py and src/data/dataset.py, the preprocessing pipeline avoids destructive filters (like Butterworth or high-pass denoising) to strictly preserve the inherent morphological fidelity of the QRS complexes. 
 
-### 4.2 Leakage-Safe Balancing Policy
+**Architectural Flow of Data Preparation:**
 
-The repository supports a strict split-first balancing strategy:
+A. **Data Ingestion (wfdb interface):**
+   - **Source:** Opens .dat files and .atr annotations from PhysioNet.
+   - **Extraction:** Isolates the primary diagnostic channel (typically MLII for MIT-BIH) and corresponding symbolic labels (e.g., 'N', 'V', 'R').
 
-1. If `balance_after_split=true`: Split train/val/test first, then apply SMOTE/ADASYN **only to training split**.
-2. If `balance_after_split=false`: Load pre-balanced arrays (legacy pipeline).
+B. **Harmonization & Resampling:**
+   - **Temporal Alignment:** Disparate datasets must share a spatial-frequency mapping. The INCART dataset (natively 257 Hz) is fundamentally upsampled to 360 Hz using scipy.signal.resample.
+   - **Annotation Scaling:** Annotation indices are linearly scaled (index * (360/257)) to ensure the markers perfectly align with the newly interpolated R-peaks.
 
-Split-first is essential for unbiased validation and test metrics, avoiding synthetic data contamination.
+C. **Zero-Mean, Unit-Variance Normalization (Z-Score):**
+   - Applied **globally per record** *before* segmentation. 
+   - $x_{norm} = \frac{x - \mu}{\sigma + 1e^{-8}}$
+   - This ensures global amplitude drift is bounded without destroying the localized amplitude variance of individual heartbeats, acting as a natural un-destructive baseline stabilizer.
+
+D. **Multi-Beat Context Windowing (1080-Sample Extraction):**
+   - **Center Anchor:** The pipeline iterates over annotated R-peaks.
+   - **Extraction Boundary:** It precisely slices [-540, +540] samples relative to the R-peak index.
+   - **Why 1080?** At 360 Hz, 1080 samples equate exactly to a **3.0-second temporal window**. This is a paradigm shift from traditional 1-second (360 samples) extraction because 3.0 seconds almost definitively captures overlapping anterior and posterior heartbeats. 
+   - **Clinical Justification:** Capturing adjacent beats naturally embeds the **R-R interval** into the dataset, which is the mathematically required distinguishing factor for ambiguous classes like 'S' (Supraventricular) and 'F' (Fusion) that share intra-beat normal morphologies.
+
+E. **AAMI Mapping & Stratified Leakage-Safe Splits:**
+   - **Class Aggregation:** Raw annotations map perfectly to {0:'N', 1:'S', 2:'V', 3:'F', 4:'Q'} per the AAMI diagnostic standard.
+   - **Training Protocol:** Driven by src/data/dataset.py, the pure unaugmented arrays follow an 80/15/5% Train/Val/Test random stratified split.
+   - **Balancing via ADASYN/SMOTE:** Crucially, SMOTE or ADASYN upsampling is applied *exclusively* to the separated training subset. Overwriting happens *only* inside the train matrix, preventing synthesized data representations from leaking and contaminating the Test or Validation structures.
 
 ### 4.3 Scalogram Conversion
 
@@ -101,8 +116,8 @@ Practical settings:
 | Backbone | MBConv only | MBConv with CBAM attention |
 | Channel Attention | SE blocks only | SE + CBAM channel refinement |
 | Spatial Attention | None | **CBAM spatial attention maps** |
-| Input | 224×224 RGB images | 224×224 CWT scalogram (3-channel replication) |
-| Head design | Global pooling → FC | **Global pooling + CBAM → FC** |
+| Input | 224Ã—224 RGB images | 224Ã—224 CWT scalogram (3-channel replication) |
+| Head design | Global pooling â†’ FC | **Global pooling + CBAM â†’ FC** |
 | Interpretability | Basic feature maps | **Grad-CAM + spatial/channel attention artifacts** |
 | Training stability | Standard AMP | **BF16 mixed precision + TF32** |
 | XAI Runtime | Not applicable | `scripts/explain_paper2.py` |
@@ -307,12 +322,12 @@ If augmentation is desired, use conservative vision transforms (mild scale jitte
 
 ### 8A.4. Transfer Learning and Early Stopping
 
-With a pretrained EfficientNet backbone, early stopping may trigger earlier (e.g., epoch 20–40 vs. Paper 1's 60–80), as the model quickly adapts learned visual features to ECG spectrograms:
+With a pretrained EfficientNet backbone, early stopping may trigger earlier (e.g., epoch 20â€“40 vs. Paper 1's 60â€“80), as the model quickly adapts learned visual features to ECG spectrograms:
 
 **Recommendation:**
-  - Use early stopping patience with LR reduction (reduce LR 3–4 times before stop).
+  - Use early stopping patience with LR reduction (reduce LR 3â€“4 times before stop).
   - Monitor validation accuracy peak to avoid stopping too early.
-  - Allow at least 30–50 epochs for fine-tuning fine_tune phase stabilization.
+  - Allow at least 30â€“50 epochs for fine-tuning fine_tune phase stabilization.
 
 ### 8A.5. ADASYN + Class Weights Interaction
 
@@ -358,7 +373,7 @@ Together, attention mechanisms act as learned feature selectors, reducing overfi
 
 | Signature | Cause | Remedy |
 |-----------|-------|--------|
-| Train loss → 0.002, Val loss → 0.5+ | Memorization | ↑ label_smoothing to 0.05, use dropout in classifier |
+| Train loss â†’ 0.002, Val loss â†’ 0.5+ | Memorization | â†‘ label_smoothing to 0.05, use dropout in classifier |
 | Val acc peaks epoch 35, val loss best epoch 50 | Checkpoint metric mismatch | Set `monitor: val_acc` |
 | Fold-to-fold variance > 3% | Hyperparameter leakage | Verify lr/wd passthrough in K-fold |
 | Poor minority F1-scores | ADASYN + class weights | Set `use_class_weights: false` |
@@ -447,13 +462,104 @@ Report:
 
 ---
 
-## 13. Explainability Protocol (Paper 2)
+## 13. Multi-scale Explainable AI (XAI) Protocol (Paper 2)
 
-Active script:
+Paper 2 bridges computer vision techniques with time-series frequency diagnostics through two primary attribution modes applied directly to the $224 \times 224$ CWT Scalograms.
 
-- `scripts/explain_paper2.py`
+### 13.1. 2D Grad-CAM (Targeting Fusion Block)
 
-Canonical command:
+To determine which time-frequency regions drove the global classification, 2D Grad-CAM is attached to the final `fusion` block preceding global pooling.
+
+Let $A^k \in \mathbb{R}^{H \times W}$ be the $k$-th feature map in the final 512-channel fusion tensor, and $y^c$ the raw logit score for class $c$.
+
+**Gradient Computation and Global Average Pooling:**
+We compute the mean channel gradients $\alpha_k^c$ which dictate the clinical importance of the $k$-th frequency filter:
+
+$$
+\alpha_k^c = \frac{1}{Z} \sum_{i=1}^{H} \sum_{j=1}^{W} \frac{\partial y^c}{\partial A_{i, j}^k}
+$$
+where $Z = H \times W$ represents spatial area.
+
+**Spatial Activation Map:**
+The final localization map $L_{Grad-CAM}^c$ is a ReLU-activated linear combination:
+
+$$
+L_{Grad-CAM}^c = \mathrm{ReLU}\left( \sum_{k} \alpha_k^c A^k \right)
+$$
+
+This $L_{Grad-CAM}^c$ is bilinearly upsampled from its latent size (e.g., $14 \times 14$) to $224 \times 224$ and overlaid onto the optical CWT scalogram.
+
+```python
+# Pseudo-code Implementation: 2D Grad-CAM
+def compute_gradcam_2d(model, scalogram_tensor, target_class):
+    activations, gradients = [], []
+
+    # Bind hooks to the fusion convolution block
+    def fwd_hook(m, i, o): activations.append(o)
+    def bwd_hook(m, i, o): gradients.append(o[0])
+
+    h1 = model.fusion.register_forward_hook(fwd_hook)
+    h2 = model.fusion.register_full_backward_hook(bwd_hook)
+
+    # Trigger gradient flow
+    logits = model(scalogram_tensor)
+    logits[:, target_class].sum().backward()
+
+    # Calculate alpha weights
+    A_k = activations[0]
+    grad_A = gradients[0]
+    alpha_k = grad_A.mean(dim=(2, 3), keepdim=True)
+
+    # ReLU combination
+    cam = torch.relu((alpha_k * A_k).sum(dim=1)).squeeze(0)
+
+    h1.remove()
+    h2.remove()
+
+    # Interpolate back to 224x224
+    cam_up = F.interpolate(cam.unsqueeze(0).unsqueeze(0), size=(224, 224), mode='bilinear').squeeze()
+    return normalize_2d(cam_up.detach().cpu().numpy())
+```
+
+### 13.2. CBAM Spatial and Channel Attention Extraction
+
+Unlike post-hoc Grad-CAM, the CBAM modules inherently compute attention natively. We extract these states during a specialized forward pass `forward_with_attention_maps`.
+
+**Spatial Maps Extracted:**
+For each backbone scale $S \in \{1, 2, 3\}$, the spatial attention map $M_s(U') \in [0,1]^{H_S \times W_S}$ highlights physical time-frequency bounds:
+
+$$
+M_{s, \text{extracted}} = \sigma\left(f^{7\times 7}\big([\mathrm{AvgPool_c}(U'); \mathrm{MaxPool_c}(U')]\big)\right)
+$$
+
+**Channel Maps Extracted:**
+The channel attention $M_c(U) \in [0,1]^{C}$ isolates octave-filters:
+
+$$
+M_{c, \text{extracted}} = \sigma\left(\mathrm{MLP}(\mathrm{GAP}(U)) + \mathrm{MLP}(\mathrm{GMP}(U))\right)
+$$
+
+```python
+# Pseudo-code Implementation: Intercepting Native CBAM States
+def extract_cbam_maps(model, scalogram_tensor):
+    model.eval()
+    with torch.no_grad():
+        # Specialized forward signature that yields intermediate bounds
+        _, _, scale_maps, fusion_maps = model.forward_with_attention_maps(scalogram_tensor)
+
+    # scale_maps contains 3 dictionaries of attention states for EfficientNet hooks
+    spatial_heatmaps = [squeeze_to_2d(m['spatial']) for m in scale_maps]
+    channel_vectors = [squeeze_to_1d(m['channel']) for m in scale_maps]
+    
+    fusion_spatial = squeeze_to_2d(fusion_maps['spatial'])
+    fusion_channel = squeeze_to_1d(fusion_maps['channel'])
+    
+    return spatial_heatmaps, channel_vectors, fusion_spatial, fusion_channel
+```
+
+### 13.3. Execution Command
+
+Active evaluation script:
 
 ```bash
 python scripts/explain_paper2.py \
@@ -462,23 +568,12 @@ python scripts/explain_paper2.py \
   --num-samples-per-class 1
 ```
 
-Leakage-safe override when required:
+*(Note: Use `--data.balance_after_split` if required by the data ingestion protocol).*
 
-```bash
-python scripts/explain_paper2.py \
-  --model-path checkpoints/paper2_efficientnet/best_model.pt \
-  --config configs/paper2_efficientnet.yaml \
-  --num-samples-per-class 1 \
-  --data.balance_after_split
-```
-
-Expected artifacts under `experiments/paper2_efficientnet/xai/` include:
-
-- `scalogram_gradcam.png`.
-- `cbam_spatial_maps.png`.
-- `cbam_channel_attention.png`.
-- `arrays.npz`.
-- per-sample and global `summary.json`.
+Generated clinical artifacts under `experiments/paper2_efficientnet/xai/`:
+- `scalogram_gradcam.png`: Shows the raw CWT visually blended with the highly active Grad-CAM regions.
+- `cbam_spatial_maps.png`: 4x grid comparing multi-scale receptive attention vs the final fusion spatial attention.
+- `cbam_channel_attention.png`: Bar plots showing the Top-32 neural filters activated globally across the entire beat.
 
 ---
 
@@ -609,3 +704,10 @@ Useful references for Paper 2 writeups:
 - ECG benchmark framing: MIT-BIH and INCART literature.
 
 This monograph should be treated as the authoritative deep guide for Paper 2 in this repository.
+
+
+
+
+
+
+

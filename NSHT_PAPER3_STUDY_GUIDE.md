@@ -1,4 +1,4 @@
-# Paper 3 Study Guide (Monograph Edition): NSHT_Dual_Evo
+﻿# Paper 3 Study Guide (Monograph Edition): NSHT_Dual_Evo
 
 ## 1. Scope
 
@@ -87,20 +87,35 @@ NSHT addresses these with learnable wavelet preprocessing, cross-modal fusion, a
 
 ## 4. Data and Methodology Pipeline
 
-### 4.1 Beat Preparation
+### 2.1 Preprocessing Phase Architecture (Modular Codebase Reality)
 
-1. ECG records are segmented into beat-level windows around R peaks.
-2. Class labels are mapped to repository 5-class targets.
-3. Splits are generated with fixed seeds for reproducibility.
+In strict adherence to the repository's src/data/download.py and src/data/dataset.py, the preprocessing pipeline avoids destructive filters (like Butterworth or high-pass denoising) to strictly preserve the inherent morphological fidelity of the QRS complexes. 
 
-### 4.2 Leakage-Safe Balancing Policy
+**Architectural Flow of Data Preparation:**
 
-Repository runtime policy enforces split-first balancing:
+A. **Data Ingestion (wfdb interface):**
+   - **Source:** Opens .dat files and .atr annotations from PhysioNet.
+   - **Extraction:** Isolates the primary diagnostic channel (typically MLII for MIT-BIH) and corresponding symbolic labels (e.g., 'N', 'V', 'R').
 
-1. If `balance_after_split=true`: Split train/val/test first, then apply SMOTE/ADASYN **only to training split**.
-2. If `balance_after_split=false`: Load pre-balanced arrays (legacy pipeline).
+B. **Harmonization & Resampling:**
+   - **Temporal Alignment:** Disparate datasets must share a spatial-frequency mapping. The INCART dataset (natively 257 Hz) is fundamentally upsampled to 360 Hz using scipy.signal.resample.
+   - **Annotation Scaling:** Annotation indices are linearly scaled (index * (360/257)) to ensure the markers perfectly align with the newly interpolated R-peaks.
 
-The split-first path is preferred for unbiased validation/test estimates and is essential for scientific integrity.
+C. **Zero-Mean, Unit-Variance Normalization (Z-Score):**
+   - Applied **globally per record** *before* segmentation. 
+   - $x_{norm} = \frac{x - \mu}{\sigma + 1e^{-8}}$
+   - This ensures global amplitude drift is bounded without destroying the localized amplitude variance of individual heartbeats, acting as a natural un-destructive baseline stabilizer.
+
+D. **Multi-Beat Context Windowing (1080-Sample Extraction):**
+   - **Center Anchor:** The pipeline iterates over annotated R-peaks.
+   - **Extraction Boundary:** It precisely slices [-540, +540] samples relative to the R-peak index.
+   - **Why 1080?** At 360 Hz, 1080 samples equate exactly to a **3.0-second temporal window**. This is a paradigm shift from traditional 1-second (360 samples) extraction because 3.0 seconds almost definitively captures overlapping anterior and posterior heartbeats. 
+   - **Clinical Justification:** Capturing adjacent beats naturally embeds the **R-R interval** into the dataset, which is the mathematically required distinguishing factor for ambiguous classes like 'S' (Supraventricular) and 'F' (Fusion) that share intra-beat normal morphologies.
+
+E. **AAMI Mapping & Stratified Leakage-Safe Splits:**
+   - **Class Aggregation:** Raw annotations map perfectly to {0:'N', 1:'S', 2:'V', 3:'F', 4:'Q'} per the AAMI diagnostic standard.
+   - **Training Protocol:** Driven by src/data/dataset.py, the pure unaugmented arrays follow an 80/15/5% Train/Val/Test random stratified split.
+   - **Balancing via ADASYN/SMOTE:** Crucially, SMOTE or ADASYN upsampling is applied *exclusively* to the separated training subset. Overwriting happens *only* inside the train matrix, preventing synthesized data representations from leaking and contaminating the Test or Validation structures.
 
 ### 4.3 Dual-Input Construction
 
@@ -225,7 +240,7 @@ with schedule $\lambda(t)$ typically increased over epochs to avoid early over-c
 ### 10.3 Practical Interpretation
 
 - CE optimizes discrimination.
-- Prototype term regularizes latent geometry (prototype weight $\lambda$ typically 0.2–0.5).
+- Prototype term regularizes latent geometry (prototype weight $\lambda$ typically 0.2â€“0.5).
 - Together they improve separation and interpretability.
 
 ---
@@ -292,8 +307,8 @@ $$\tilde{x}[n] = x[(n - \Delta) \bmod L], \quad \Delta \in [-2\%, +2\%] \cdot L$
 training:
   augmentation_prob: 0.35               # 35% of batches augmented
   augmentation_noise_std: 0.008        # Gaussian noise std
-  augmentation_amplitude_jitter: 0.08  # ±8% amplitude jitter
-  augmentation_time_shift_pct: 0.02    # ±2% temporal shift
+  augmentation_amplitude_jitter: 0.08  # Â±8% amplitude jitter
+  augmentation_time_shift_pct: 0.02    # Â±2% temporal shift
 ```
 
 **Note:** Spectral stream (2D) augmentation is **not applied**, as time-frequency distortion misaligns learned patterns in the CWT representation.
@@ -373,12 +388,12 @@ kfold_trainer = KFoldTrainer(
 
 | Signature | Cause | Remedy |
 |-----------|-------|--------|
-| Train loss → 0.002, Val loss → 0.5+ | Memorization in dual streams | ↑ label_smoothing to 0.08, ↑ prototype_loss_weight |
+| Train loss â†’ 0.002, Val loss â†’ 0.5+ | Memorization in dual streams | â†‘ label_smoothing to 0.08, â†‘ prototype_loss_weight |
 | Val acc peaks epoch 80, val loss best epoch 40 | Checkpoint metric mismatch | Set `monitor: val_acc` |
 | Stream imbalance (temporal >> spectral) | One stream not regularized | Check augmentation_prob applies to both, verify label_smoothing |
-| Fold-to-fold variance > 5% | Hyperparameter leakage | Verify lr/wd/λ passthrough in K-fold |
+| Fold-to-fold variance > 5% | Hyperparameter leakage | Verify lr/wd/Î» passthrough in K-fold |
 | Poor minority class separation | ADASYN + class weights | Disable class_weights; increase prototype_loss_weight |
-| Prototype loss constant, CE loss decreases | Prototype learning stalled | ↓ prototype_loss_weight, ensure prototypes updated each epoch |
+| Prototype loss constant, CE loss decreases | Prototype learning stalled | â†“ prototype_loss_weight, ensure prototypes updated each epoch |
 
 ### 10A.10. Recommended Regularization Configuration for Paper 3
 
@@ -509,12 +524,12 @@ python scripts/extract_nsht_prototypes.py \
 
 ## 15. Novelty Matrix (Paper 3: NSHT_Dual_Evo)
 
-1. **Learnable wavelet front-end** — Adaptive denoising replacing fixed preprocessing.
-2. **Temporal-spectral cross-modal attention** — Dynamic relevance-weighted fusion of 1D and 2D features.
-3. **Explicit P-wave/low-frequency specialization** — Enhanced modeling of subtle atrial patterns for N/S boundaries.
-4. **Prototype consistency objective** — Joint CE + prototype loss for structured latent geometry.
-5. **Split-first balancing policy** — Leakage-safe methodology for robust generalization claims.
-6. **Structured XAI suite** — Wavelet parameter visualization, cross-attention heatmaps, stream contribution metrics.
+1. **Learnable wavelet front-end** â€” Adaptive denoising replacing fixed preprocessing.
+2. **Temporal-spectral cross-modal attention** â€” Dynamic relevance-weighted fusion of 1D and 2D features.
+3. **Explicit P-wave/low-frequency specialization** â€” Enhanced modeling of subtle atrial patterns for N/S boundaries.
+4. **Prototype consistency objective** â€” Joint CE + prototype loss for structured latent geometry.
+5. **Split-first balancing policy** â€” Leakage-safe methodology for robust generalization claims.
+6. **Structured XAI suite** â€” Wavelet parameter visualization, cross-attention heatmaps, stream contribution metrics.
 
 *(Historical: NSHT-Tri tri-stream variant with statistical features was explored but is not part of current deployment.)*
 6. Structured multi-artifact explainability output.
@@ -719,3 +734,11 @@ python scripts/extract_nsht_prototypes.py \
 See [MODULAR_CODEBASE_README.md](MODULAR_CODEBASE_README.md) for detailed setup and additional options.
 
 This monograph is the canonical heavy study guide for Paper 3 in the current repository state.
+
+
+
+
+
+
+
+

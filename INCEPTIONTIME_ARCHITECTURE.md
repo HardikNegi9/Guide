@@ -70,9 +70,9 @@ flowchart TD
     Ctx["Context Module <br> (P-Wave, QRS, T-Wave Regional Mean Pooling)"]
     
     subgraph Head [Classification Head]
-        Pool[Concat: Global Avg Pooling & Global Max Pooling]
-        Dense[Linear(256) -> BatchNorm -> ReLU -> Dropout]
-        Out[Linear -> Logits Output <br> B x 5]
+        Pool["Concat: Global Avg Pooling & Global Max Pooling"]
+        Dense["Linear(256) -> BatchNorm -> ReLU -> Dropout"]
+        Out["Linear -> Logits Output <br> B x 5"]
     end
     
     %% Connections Main
@@ -406,33 +406,118 @@ Observed behavior pattern (typical for strong-capacity models on balanced data):
 
 ---
 
-## 13. Explainability and Clinical Traceability
-Paper 1 explainability command:
+## 13. Explainable AI (XAI) and Clinical Traceability
+
+The Paper 1 architecture implements two primary post-hoc attribution methods to bridge the gap between deep temporal representations and clinical interpretability: **Integrated Gradients (IG)** for sample-level feature attribution and **1D Grad-CAM** for regional activation mapping.
+
+### 13.1. Integrated Gradients (1D Temporal)
+
+Integrated Gradients attribute the prediction $f(x)$ of signal $x \in \mathbb{R}^L$ relative to a baseline $x'$ (typically a zero-voltage baseline $x' = 0$). It computes the path integral of the gradients along the straight-line path from baseline to input.
+
+**Axiomatic Formulation:**
+Given the function $F: \mathbb{R}^L \rightarrow [0,1]$ representing the softmax output for target class $c$, the attribution $IG_i$ for the $i$-th temporal point is:
+
+$$
+IG_i(x) = (x_i - x'_i) \times \int_{\alpha=0}^{1} \frac{\partial F(x' + \alpha \times (x - x'))}{\partial x_i} d\alpha
+$$
+
+**Riemann Approximation (Implementation):**
+Since continuous integration is intractable, we approximate the integral utilizing $m$ discrete interpolation steps:
+
+$$
+IG_i(x) \approx (x_i - x'_i) \times \frac{1}{m} \sum_{k=1}^{m} \frac{\partial F(x' + \frac{k}{m} (x - x'))}{\partial x_i}
+$$
+
+```python
+# Pseudo-code Implementation: 1D Integrated Gradients
+def compute_ig(model, signal, target_class, steps=64):
+    baseline = torch.zeros_like(signal)
+    alphas = torch.linspace(0.0, 1.0, steps + 1, device=signal.device)
+    total_gradients = torch.zeros_like(signal)
+    
+    for alpha in alphas:
+        # Generate interpolated path point
+        interpolant = baseline + alpha * (signal - baseline)
+        interpolant.requires_grad_(True)
+        
+        # Forward pass and gradient capture
+        logits = model(interpolant)
+        target_score = logits[:, target_class].sum()
+        gradients = torch.autograd.grad(target_score, interpolant)[0]
+        
+        total_gradients += gradients.detach()
+        
+    avg_gradients = total_gradients / len(alphas)
+    attributions = (signal - baseline) * avg_gradients
+    
+    return attributions.squeeze(0).cpu().numpy()
+```
+
+### 13.2. 1D Grad-CAM (Targeting Final Inception Block)
+
+Gradient-weighted Class Activation Mapping (Grad-CAM) identifies the spatial (temporal) regions highly active for a specific class decision $c$.
+
+Let $A^{k} \in \mathbb{R}^T$ be the $k$-th feature map activation from the final convolutional layer, and $y^c$ the raw logit score before the softmax.
+
+1. **Gradient Computation**: Compute gradients of $y^c$ w.r.t $A^k$.
+2. **Global Average Pooling**: Derive neuron importance weights $\alpha_k^c$:
+
+$$
+\alpha_k^c = \frac{1}{T} \sum_{t=1}^{T} \frac{\partial y^c}{\partial A_t^k}
+$$
+
+3. **Weighted Combination & ReLU**: Combine activations, forcing positive influence tracking:
+
+$$
+L_{Grad-CAM}^c = ReLU\left(\sum_{k} \alpha_k^c A^k \right)
+$$
+
+The result is interpolated back to length $L=1080$ to perfectly overlay the original ECG space.
+
+```python
+# Pseudo-code Implementation: 1D Grad-CAM via Hooks
+def compute_gradcam_1d(model, signal, target_class, target_layer):
+    activations, gradients = [], []
+    
+    # Register forward and backward hooks to capture intermediate A^k and gradients
+    def fwd_hook(mod, inp, out): activations.append(out)
+    def bwd_hook(mod, gin, gout): gradients.append(gout[0])
+    
+    h1 = target_layer.register_forward_hook(fwd_hook)
+    h2 = target_layer.register_full_backward_hook(bwd_hook)
+    
+    # Excitation
+    logits = model(signal)
+    logits[:, target_class].sum().backward()
+    
+    # Calculate α_k^c and linear combination
+    A_k = activations[0]                    # Shape: [1, Channels, T]
+    grad_A = gradients[0]                   # Shape: [1, Channels, T]
+    alpha_k = grad_A.mean(dim=2, keepdim=True)
+    
+    cam = torch.relu((alpha_k * A_k).sum(dim=1)).squeeze(0)
+    
+    h1.remove()
+    h2.remove()
+    
+    # Upsample back to temporal length input and row-normalize
+    cam_np = cam.detach().cpu().numpy()
+    return normalize(cam_np)
+```
+
+### 13.3. Execution Command
 
 ```bash
 python scripts/explain_paper1.py \
     --model-path checkpoints/paper1_inceptiontime/best_model.pt \
     --config configs/paper1_inceptiontime.yaml \
-    --num-samples-per-class 1
+    --ig-steps 64 \
+    --num-samples-per-class 2
 ```
 
-Optional split-safe loading override:
-
-```bash
---data.balance_after_split
-```
-
-Outputs in experiments/paper1_inceptiontime/xai/ include:
-- signal_attributions.png,
-- branch_summary.png,
-- attributions.npz,
-- branch_summary.json,
-- per-sample and global summary json files.
-
-Clinical interpretation linkage:
-- branch activations highlight scale sensitivity for beat morphology,
-- attribution maps identify sample-level salient temporal segments,
-- summaries support class-level behavior auditing.
+Outputs inside `experiments/paper1_inceptiontime/xai/` directly support clinical auditing:
+- `signal_attributions.png`: Unites the baseline ECG trace with the IG and Grad-CAM spatial heatmaps.
+- `branch_summary.png`: Maps the mean $|activation|$ magnitudes across all $9, 19, 39$ branch filters, revealing if mesio- or macro-scale features drove the sequence deduction.
 
 ---
 

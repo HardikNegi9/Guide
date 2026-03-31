@@ -1,4 +1,4 @@
-# InceptionTime for 1D ECG Signal Classification: In-Depth Study Guide
+﻿# InceptionTime for 1D ECG Signal Classification: In-Depth Study Guide
 
 ## 1. Introduction
 InceptionTime is a deep learning architecture designed for time series classification, inspired by the Inception modules from computer vision. This guide provides a comprehensive overview, including data flow, model structure, mathematical formulations, and a flowchart for Paper 1: "Context-Aware InceptionTime with Multi-Scale Temporal Processing" applied to ECG arrhythmia classification.
@@ -15,12 +15,68 @@ InceptionTime is a deep learning architecture designed for time series classific
 
 **Step 4:** Batches are fed to the InceptionTime model for training and evaluation.
 
+
+### 2.1 Preprocessing Phase Architecture (Modular Codebase Reality)
+
+In strict adherence to the repository's src/data/download.py and src/data/dataset.py, the preprocessing pipeline avoids destructive filters (like Butterworth or high-pass denoising) to strictly preserve the inherent morphological fidelity of the QRS complexes. 
+
+**Architectural Flow of Data Preparation:**
+
+A. **Data Ingestion (wfdb interface):**
+   - **Source:** Opens .dat files and .atr annotations from PhysioNet.
+   - **Extraction:** Isolates the primary diagnostic channel (typically MLII for MIT-BIH) and corresponding symbolic labels (e.g., 'N', 'V', 'R').
+
+B. **Harmonization & Resampling:**
+   - **Temporal Alignment:** Disparate datasets must share a spatial-frequency mapping. The INCART dataset (natively 257 Hz) is fundamentally upsampled to 360 Hz using scipy.signal.resample.
+   - **Annotation Scaling:** Annotation indices are linearly scaled (index * (360/257)) to ensure the markers perfectly align with the newly interpolated R-peaks.
+
+C. **Zero-Mean, Unit-Variance Normalization (Z-Score):**
+   - Applied **globally per record** *before* segmentation. 
+   - $x_{norm} = \frac{x - \mu}{\sigma + 1e^{-8}}$
+   - This ensures global amplitude drift is bounded without destroying the localized amplitude variance of individual heartbeats, acting as a natural un-destructive baseline stabilizer.
+
+D. **Multi-Beat Context Windowing (1080-Sample Extraction):**
+   - **Center Anchor:** The pipeline iterates over annotated R-peaks.
+   - **Extraction Boundary:** It precisely slices [-540, +540] samples relative to the R-peak index.
+   - **Why 1080?** At 360 Hz, 1080 samples equate exactly to a **3.0-second temporal window**. This is a paradigm shift from traditional 1-second (360 samples) extraction because 3.0 seconds almost definitively captures overlapping anterior and posterior heartbeats. 
+   - **Clinical Justification:** Capturing adjacent beats naturally embeds the **R-R interval** into the dataset, which is the mathematically required distinguishing factor for ambiguous classes like 'S' (Supraventricular) and 'F' (Fusion) that share intra-beat normal morphologies.
+
+E. **AAMI Mapping & Stratified Leakage-Safe Splits:**
+   - **Class Aggregation:** Raw annotations map perfectly to {0:'N', 1:'S', 2:'V', 3:'F', 4:'Q'} per the AAMI diagnostic standard.
+   - **Training Protocol:** Driven by src/data/dataset.py, the pure unaugmented arrays follow an 80/15/5% Train/Val/Test random stratified split.
+   - **Balancing via ADASYN/SMOTE:** Crucially, SMOTE or ADASYN upsampling is applied *exclusively* to the separated training subset. Overwriting happens *only* inside the train matrix, preventing synthesized data representations from leaking and contaminating the Test or Validation structures.
+
 ---
 
 ## 3. Model Architecture: InceptionTime
 
 
-### 3.1. InceptionTime Architecture Diagram
+### 3.1 Exhaustive Model Architecture Block (src/models/inception_time.py)
+
+The Context-Aware InceptionTime model strictly maps logical segments to PyTorch objects built to consume the isolated 1080-length 1D signals:
+
+**1. Data Stem Matrix Embedding**
+- **Input Object:** 	orch.Tensor of shape [B, 1, 1080]
+- **Stem Convolution:** A 1D convolutional layer (k=7, s=1, p=3) embeds the raw physiological signal into 
+_filters continuous channels (e.g., 32 or 64).
+- **Positional Encoding:** Because temporal features carry relative positional offsets from the R-peak, a learnable 1D spatial matrix [1, C, L] is added immediately following the stem.
+
+**2. Alternating Multi-Scale Inception Core**
+The model cascades depth blocks (e.g., 6) alternating between two structural variants:
+- **InceptionModule**: Applies a \times1$ bottleneck, then parallel Conv1D paths with kernel sizes k \in \{9, 19, 39\}. This sweeps short, medium, and wide intrinsic variations around physiological waves (P-waves, T-waves).
+- **DilatedInceptionModule**: Applies a single kernel size (k=15) but spans multiple dilation rates (d \in \{1, 2, 4, 8\}). This provides massive expanding receptive fields capable of perceiving the multi-beat global contextual state (R-R Interval disparities).
+- **Channel Attention:** Each concatenated output routes through an SEBlock (Squeeze-and-Excitation) that performs adaptive channel-recalibration before adding the residual constraint.
+
+**3. The Context Module (ContextModule)**
+- Receives the final dense block output.
+- Employs 3 localized 1D pooling strategies targeting specific regions of the 1080 length array: the pre-R P-wave zone, the QRS complex zone, and the post-R T-wave zone. Note: For the 1080 input size, it pools uniformly to synthesize global statistical variance.
+
+**4. Classification Head**
+- Takes the feature map.
+- Concatenates **Global Average Pooling (GAP)** and **Global Max Pooling (GMP)** linearly.
+- Passes through an intermediate dense layer (e.g., 256), Batch Normalization, ReLU, Dropout (p=0.3), and finally a linear out projection to [B, 5] classes.
+
+### 3.2. InceptionTime Architecture Diagram
 
 ```mermaid
 flowchart TD
@@ -34,31 +90,31 @@ flowchart TD
     
     subgraph Body [Alternating Inception Blocks]
          direction TB
-         Block1["Inception Module (Block 1)<br>k ∈ {9, 19, 39}"]
-         Res1(("⊕"))
+         Block1["Inception Module (Block 1)<br>k âˆˆ {9, 19, 39}"]
+         Res1(("âŠ•"))
          
-         Block2["Dilated Inception (Block 2)<br>k=15, dil ∈ {1, 2, 4, 8}"]
-         Res2(("⊕"))
+         Block2["Dilated Inception (Block 2)<br>k=15, dil âˆˆ {1, 2, 4, 8}"]
+         Res2(("âŠ•"))
          
-         Block3["Inception Module (Block 3)<br>k ∈ {9, 19, 39}"]
-         Res3(("⊕"))
+         Block3["Inception Module (Block 3)<br>k âˆˆ {9, 19, 39}"]
+         Res3(("âŠ•"))
          
-         Block4["Dilated Inception (Block 4)<br>k=15, dil ∈ {1, 2, 4, 8}"]
-         Res4(("⊕"))
+         Block4["Dilated Inception (Block 4)<br>k=15, dil âˆˆ {1, 2, 4, 8}"]
+         Res4(("âŠ•"))
          
-         Block5["Inception Module (Block 5)<br>k ∈ {9, 19, 39}"]
-         Res5(("⊕"))
+         Block5["Inception Module (Block 5)<br>k âˆˆ {9, 19, 39}"]
+         Res5(("âŠ•"))
          
-         Block6["Dilated Inception (Block 6)<br>k=15, dil ∈ {1, 2, 4, 8}"]
-         Res6(("⊕"))
+         Block6["Dilated Inception (Block 6)<br>k=15, dil âˆˆ {1, 2, 4, 8}"]
+         Res6(("âŠ•"))
     end
     
     Ctx["Context Module <br> (P-Wave, QRS, T-Wave Regional Mean Pooling)"]
     
     subgraph Head [Classification Head]
-        Pool[Concat: Global Avg Pooling & Global Max Pooling]
-        Dense[Linear(256) -> BatchNorm -> ReLU -> Dropout]
-        Out[Linear -> Logits Output <br> B x 5]
+        Pool["Concat: Global Avg Pooling & Global Max Pooling"]
+        Dense["Linear(256) -> BatchNorm -> ReLU -> Dropout"]
+        Out["Linear -> Logits Output <br> B x 5"]
     end
     
     %% Connections Main
@@ -143,7 +199,7 @@ flowchart LR
         SE_Lin1 --> SE_ReLU[ReLU]
         SE_ReLU --> SE_Lin2[Linear: C]
         SE_Lin2 --> SE_Sigmoid[Sigmoid]
-        SE_Sigmoid --> SE_Mult((⊗))
+        SE_Sigmoid --> SE_Mult((âŠ—))
         SE_In --> SE_Mult
         SE_Mult --> SE_Out_Final[Recalibrated Output]
     end
@@ -295,12 +351,12 @@ where $\alpha$ is the smoothing coefficient (typically $0.05$) and $C$ is the nu
 **Effect on Loss:**
   - Replaces hard targets with soft distributions.
   - Reduces model's propensity to assign probability 1.0 to any class.
-  - Empirically improves validation generalization by 1–3% on noisy datasets.
+  - Empirically improves validation generalization by 1â€“3% on noisy datasets.
 
 **Configuration:**
 ```yaml
 training:
-  label_smoothing: 0.05  # Recomm.: 0.03–0.1
+  label_smoothing: 0.05  # Recomm.: 0.03â€“0.1
 ```
 
 ### 4A.3. 1D Signal Augmentation
@@ -313,11 +369,11 @@ $$
 \tilde{x}=x+\mathcal{N}(0,\sigma_{\text{noise}}^2)
 $$
 
-where $\sigma_{\text{noise}}\approx 0.008$ (typical µV scale).
+where $\sigma_{\text{noise}}\approx 0.008$ (typical ÂµV scale).
 
 #### b) **Amplitude Jitter**
 
-Randomly scale signal amplitude by factors in $[1-\delta, 1+\delta]$, e.g., $\delta=0.08$ (±8%).
+Randomly scale signal amplitude by factors in $[1-\delta, 1+\delta]$, e.g., $\delta=0.08$ (Â±8%).
 
 $$
 \tilde{x}=\alpha\cdot x, \quad\alpha\sim\text{Uniform}(1-\delta,1+\delta)
@@ -338,14 +394,14 @@ where $\Delta$ is a random integer in $[-2\%, +2\%] \cdot L$.
 training:
   augmentation_prob: 0.35           # Prob. of applying any augmentation
   augmentation_noise_std: 0.008    # Gaussian noise std
-  augmentation_amplitude_jitter: 0.08  # ±8% amplitude scaling
-  augmentation_time_shift_pct: 0.02    # ±2% of beat length
+  augmentation_amplitude_jitter: 0.08  # Â±8% amplitude scaling
+  augmentation_time_shift_pct: 0.02    # Â±2% of beat length
 ```
 
 **Rationale:**
   - Augmentations are physiologically plausible (acquisition noise, lead placement variance, R-peak detection jitter).
   - Applied at batch level, not sample level, reducing memory overhead.
-  - Reduces training-validation loss gap by 5–15% empirically.
+  - Reduces training-validation loss gap by 5â€“15% empirically.
 
 ### 4A.4. ADASYN Balancing + Class Weights Interaction
 
@@ -391,11 +447,11 @@ kfold_trainer = KFoldTrainer(
 
 | Signature | Cause | Remedy |
 |-----------|-------|--------|
-| Train loss → 0.002, Val loss → 0.3+ | Memorization | ↑ label_smoothing, ↑ augmentation_prob |
+| Train loss â†’ 0.002, Val loss â†’ 0.3+ | Memorization | â†‘ label_smoothing, â†‘ augmentation_prob |
 | Val acc peaks at epoch 60, val loss best at epoch 36 | Checkpoint metric mismatch | Set `monitor: val_acc` |
 | Fold-to-fold variance > 5% | Hyperparameter leakage | Verify lr/weight_decay passthrough |
 | Poor minority class recall | Over-weighting | Disable class_weights if using ADASYN |
-| Noisy val loss curve | Insufficient regularization | ↑ augmentation_noise_std, ↑ augmentation_amplitude_jitter |
+| Noisy val loss curve | Insufficient regularization | â†‘ augmentation_noise_std, â†‘ augmentation_amplitude_jitter |
 
 ---
 
@@ -624,4 +680,8 @@ By fully leveraging the expanded 1080-sample segment scale, the **ContextAwareIn
 *   **Premature Ventricular (V):** 98.62% F1
 *   **Fusion (F):** 89.32% F1 (Historically the most difficult class to separate)
 *   **Unknown (Q):** 99.72% F1
+
+
+
+
 
