@@ -31,13 +31,13 @@ $$
 
 where:
 
-- $L=216$ samples per R-peak-aligned beat.
+- $L=1080$ samples per R-peak-aligned beat.
 - Classes $\{0,1,2,3,4\}$ correspond to AAMI types $\{N,S,V,F,Q\}$.
 
-**NSHT_Dual_Evo** (primary implementation) learns a dual-stream mapping:
+**NSHT_Dual_Evo** (primary implementation) learns a dual-stream mapping:        
 
 $$
-f_\theta:\mathbb{R}^{216}\times\mathbb{R}^{H\times W\times3}\rightarrow\Delta^{5}
+f_\theta:\mathbb{R}^{1080}\times\mathbb{R}^{H\times W\times3}\rightarrow\Delta^{5}
 $$
 
 where the first input is the 1D temporal beat signal and the second is a 2D spectral image.
@@ -45,7 +45,7 @@ where the first input is the 1D temporal beat signal and the second is a 2D spec
 **Optional:** An NSHT-Tri extension adds a statistical feature stream $s\in\mathbb{R}^{d_s}$:
 
 $$
-f^{\mathrm{tri}}_\theta:\mathbb{R}^{216}\times\mathbb{R}^{H\times W\times3}\times\mathbb{R}^{d_s}\rightarrow\Delta^{5}
+f^{\mathrm{tri}}_\theta:\mathbb{R}^{1080}\times\mathbb{R}^{H\times W\times3}\times\mathbb{R}^{d_s}\rightarrow\Delta^{5}
 $$
 
 NSHT-Tri is not active in the current codebase but available for future ablation studies.
@@ -154,7 +154,7 @@ For each beat:
 ```python
 # Pseudo-code Implementation: NSHT_Dual_Evo Forward Pass
 def forward(self, x_1d, return_hidden=False):
-    # x_1d shape: [Batch, 1, 216]
+    # x_1d shape: [Batch, 1, 1080]
     
     # 1. Learnable Spectral Stream (2D)
     x_cwt = self.wavelet_transform(x_1d) # Parametric Morlet parameters
@@ -527,8 +527,8 @@ This configuration provides multi-layered regularization: data-level (ADASYN), f
 
 Representative tensor contracts:
 
-1. Input 1D: $B\times1\times216$.
-2. Wavelet output: $B\times K\times216$.
+1. Input 1D: $B\times1\times1080$.
+2. Wavelet output: $B\times K\times1080$.
 3. Temporal output: $B\times C_t\times L_t$.
 4. Spectral output: $B\times C_s\times H_s\times W_s$.
 5. Fused embedding: $B\times d$.
@@ -650,7 +650,37 @@ def extract_prototypes_and_latents(model, test_loader):
     return latents_np, labels_np, prototypes
 ```
 
-### 14.4. Execution Commands and Artifacts
+### 14.4. XAI Sub-System Architecture Flow
+
+```mermaid
+flowchart TD
+    Raw[Input: 1D Signal Bx1080 & 2D Scalogram] --> Model[Trained NSHT_Dual_Evo Checkpoint]
+    
+    subgraph Wavelet Front-End
+        Model --> Params[Extract Learnable Scales & Frequencies]
+        Params --> WaveletPlots[Wavelet Filter Bank Visualization]
+    end
+
+    subgraph Cross-Attention Extraction
+        Model --> Fusion[Evolutionary Fusion Layer]
+        Fusion -->|Hooks| AttnWeights[Capture Q-K Softmax Matrix]
+        AttnWeights --> Map[Temporal-vs-Spectral Demand Matrix]
+    end
+
+    subgraph Prototype Distance Pipeline
+        Model --> Latent[Forward Pass to 192D Latent Vector]
+        Latent --> Compare[Compute Euclidean Distance to Class Centroids]
+        Compare --> tSNE[2D Subspace t-SNE Projection]
+    end
+    
+    WaveletPlots --> Output[Clinical XAI Output Artifacts: png, npz, JSON]
+    Map --> Output
+    tSNE --> Output
+    Model --> Stream[Dynamic Sigmoid Stream Gating Ratios]
+    Stream --> Output
+```
+
+### 14.5. Execution Commands and Artifacts
 
 ```bash
 python scripts/explain_paper3.py \

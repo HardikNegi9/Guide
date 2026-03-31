@@ -1,4 +1,4 @@
-# InceptionTime for 1D ECG Signal Classification: In-Depth Study Guide
+﻿# InceptionTime for 1D ECG Signal Classification: In-Depth Study Guide
 
 ## 1. Introduction
 InceptionTime is a deep learning architecture designed for time series classification, inspired by the Inception modules from computer vision. This guide provides a comprehensive overview, including data flow, model structure, mathematical formulations, and a flowchart for Paper 1: "Context-Aware InceptionTime with Multi-Scale Temporal Processing" applied to ECG arrhythmia classification.
@@ -867,6 +867,55 @@ By fully leveraging the expanded 1080-sample segment scale, the **ContextAwareIn
 *   **Premature Ventricular (V):** 98.62% F1
 *   **Fusion (F):** 89.32% F1 (Historically the most difficult class to separate)
 *   **Unknown (Q):** 99.72% F1
+
+---
+
+## 5. Explainable AI (XAI) Integration Architecture
+
+A critical component of this framework is the localized explanation of decisions. While 1D sequence models inherently lack 2D structural imagery, we orchestrate a continuous mapping of learned behavior backward into the physiological spatial domain using `scripts/explain_paper1.py` and `src.evaluation.paper1_xai`.
+
+### 5.1 The XAI Technical Stack
+The interpretability system interacts directly with the `ContextAwareInceptionTime` internal feature maps, rendering three concurrent mathematical explanations:
+
+1. **1D Grad-CAM (Gradient-weighted Class Activation Mapping):**
+   - **Hook Point:** Attaches directly to the final Inception block (before global pooling).
+   - **Mechanism:** Computes the gradients of the target class score with respect to the `1D Convolutional` activation maps. It highlights broad temporal regions mathematically responsible for the prediction.
+   - **Advantage:** Shows *macro-level* structural attribution (e.g., highlighting an entire anomalous T-wave variance rather than single data points).
+
+2. **Integrated Gradients (IG):**
+   - **Hook Point:** Attaches directly to the `[B, 1, 1080]` input tensors (Raw Data Space).
+   - **Mechanism:** Captures the structural attribution by linearly interpolating between a non-informative zero-baseline scalar and the physical input array, computing gradients sequentially at `ig_steps=64` intervals. 
+   - **Advantage:** Provides sub-segment *micro-level* granularity, allowing us to see exact localized spikes or QRS phase shifts responsible for high-certainty activations.
+
+3. **Multi-Scale Branch Activation Analysis:**
+   - **Mechanism:** Isolates and extracts the `z9, z19, z39, z_pool` variable outputs inside explicit Inception blocks. 
+   - **Advantage:** Visualizes empirically whether short spatial variations (kernel `k=9`) or massive context receptive fields (`k=39` / Dilated variables) governed the specific anomaly classification. This empirically proves the value of having multi-scale receptive field windows.
+
+### 5.2 XAI Sub-System Architecture Flow
+```mermaid
+flowchart TD
+    Raw[Input Tensor B x 1 x 1080] --> Model[Trained InceptionTime Checkpoint]
+    
+    subgraph Core XAI Pipeline
+        Model --> Activations[Capture Final Inception Block Activations]
+        Model --> ClassHead[Target Pathologic Class Score]
+        ClassHead -->|Backward Pass| Grads[Compute Gradients]
+        Activations --> Cross[Global Multiply & Pool]
+        Grads --> Cross
+        Cross --> ScaledMask[1D Grad-CAM Mask B x 1 x 1080]
+    end
+
+    subgraph Integrated Gradients Pipeline
+        Baseline[Zero Baseline Array] --> Interpolate[Step Interpolation n=64]
+        Interpolate --> ModelIG[Forward & Backward Passes]
+        ModelIG --> Integrate[Integral of Gradients]
+        Integrate --> IGD[Sample-wise IG Atribution]
+    end
+    
+    ScaledMask --> Overlay(Attribution Overlay on Raw Signal Space)
+    IGD --> Overlay
+    Overlay --> Output[Clinical XAI Output Artifacts: npz, png]
+```
 
 
 

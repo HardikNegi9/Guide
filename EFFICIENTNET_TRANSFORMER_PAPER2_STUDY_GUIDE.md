@@ -21,13 +21,13 @@ $$
 
 where:
 
-- $L=216$ samples per beat segment.
+- $L=1080$ samples per beat segment.
 - Classes $\{0,1,2,3,4\}$ correspond to AAMI types $\{N,S,V,F,Q\}$.
 
 The Paper 2 representation map converts 1D to 2D:
 
 $$
-\Phi_{\text{CWT}}: \mathbb{R}^{216}\rightarrow\mathbb{R}^{H\times W\times 3}
+\Phi_{\text{CWT}}: \mathbb{R}^{1080}\rightarrow\mathbb{R}^{H\times W\times 3}    
 $$
 
 with $(H,W)=(224,224)$ and 3-channel pseudo-RGB replication.
@@ -115,7 +115,7 @@ Practical settings:
 
 - Wavelet: Morlet (`morl`).
 - Scales: `np.arange(1,65)`.
-- Native shape $64\times216$, then interpolated to $224\times224$ (`img_size`).
+- Native shape $64\times1080$, then interpolated to $224\times224$ (`img_size`).
 - Channel format: 3-channel replication for vision backbones.
 
 ---
@@ -642,7 +642,35 @@ def extract_cbam_maps(model, scalogram_tensor):
     return spatial_heatmaps, channel_vectors, fusion_spatial, fusion_channel
 ```
 
-### 13.3. Execution Command
+### 13.3. XAI Sub-System Architecture Flow
+
+```mermaid
+flowchart TD
+    Raw[Input Scalogram B x 3 x 224 x 224] --> Model[Trained AttentionEfficientNet Checkpoint]
+    
+    subgraph Core XAI Pipeline
+        Model --> FusionBlock[Capture Final Fusion Block Activations]
+        Model --> ClassHead[Target Pathologic Class Score]
+        ClassHead -->|Backward Pass| Grads[Compute Gradients]
+        FusionBlock --> Cross[Global Multiply & Pool]
+        Grads --> Cross
+        Cross --> ScaledMask[2D Grad-CAM Mask B x 1 x 14 x 14]
+        ScaledMask -->|Bilinear Upsample| CAM[2D Grad-CAM 224 x 224]
+    end
+
+    subgraph Native CBAM Extraction
+        Model --> CBAM[Intercept Native Attention States]
+        CBAM --> Spatial[Spatial Maps: 3 Scales + Fusion]
+        CBAM --> Channel[Channel Maps: Top-32 Filters]
+    end
+    
+    CAM --> Overlay(Attribution Overlay on Raw Optical Space)
+    Spatial --> Output[Clinical XAI Output Artifacts: png, npz, json]
+    Channel --> Output
+    Overlay --> Output
+```
+
+### 13.4. Execution Command
 
 Active evaluation script:
 
@@ -655,10 +683,11 @@ python scripts/explain_paper2.py \
 
 *(Note: Use `--data.balance_after_split` if required by the data ingestion protocol).*
 
-Generated clinical artifacts under `experiments/paper2_efficientnet/xai/`:
+Generated clinical artifacts under `experiments/paper2_efficientnet/xai/`:    
 - `scalogram_gradcam.png`: Shows the raw CWT visually blended with the highly active Grad-CAM regions.
 - `cbam_spatial_maps.png`: 4x grid comparing multi-scale receptive attention vs the final fusion spatial attention.
 - `cbam_channel_attention.png`: Bar plots showing the Top-32 neural filters activated globally across the entire beat.
+- `arrays.npz` and `summary.json`.
 
 ---
 
