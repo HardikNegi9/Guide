@@ -21,7 +21,7 @@ InceptionTime is a deep learning architecture designed for time series classific
 In strict adherence to the repository's src/data/download.py and src/data/dataset.py, the preprocessing pipeline avoids destructive filters (like Butterworth or high-pass denoising) to strictly preserve the inherent morphological fidelity of the QRS complexes. 
 
 #### Native Data Pipeline Flowchart
-\\\mermaid
+```mermaid
 flowchart TD
     Raw[Read WFDB Records & Annotations] --> Resample[Resample to 360 Hz <br> e.g. from INCART 257 Hz]
     Resample --> ZScore[Continuous Record Z-Score Normalization]
@@ -29,7 +29,7 @@ flowchart TD
     Window --> Map[AAMI 5-Class Target Mapping]
     Map --> Split[Stratified Train/Val/Test Split]
     Split --> TrainOnly[Apply ADASYN/SMOTE <br> to Training Split Only]
-\\\
+```
 
 **Architectural Flow of Data Preparation:**
 
