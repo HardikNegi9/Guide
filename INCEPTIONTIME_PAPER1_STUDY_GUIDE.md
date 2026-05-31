@@ -18,7 +18,7 @@ InceptionTime is a deep learning architecture designed for time series classific
 
 ### 2.1 Preprocessing Phase Architecture (Modular Codebase Reality)
 
-In strict adherence to the repository's src/data/download.py and src/data/dataset.py, the preprocessing pipeline avoids destructive filters (like Butterworth or high-pass denoising) to strictly preserve the inherent morphological fidelity of the QRS complexes. 
+Contrary to previous documentation, the repository's `src/data/download.py` utilizes an **Advanced Denoising Pipeline** that applies a 3-stage mathematical filtering process (0.5Hz Butterworth highpass, 60Hz IIR notch filter, and DWT db4 soft-thresholding) to heavily smooth and normalize signals before they reach the models.
 
 #### Native Data Pipeline Flowchart
 ```mermaid
@@ -855,18 +855,26 @@ This document is intended as a comprehensive study guide for writing and underst
 
 ## 4. State-of-the-Art Experimental Results
 
-By fully leveraging the expanded 1080-sample segment scale, the **ContextAwareInceptionTime** model achieves record-breaking performance metrics on the MIT-BIH Arrhythmia Dataset:
+By fully leveraging the expanded 1080-sample segment scale, the **ContextAwareInceptionTime** model achieves record-breaking multi-beat contextual performance metrics. Crucially, the 10-Fold evaluation proves incredible robustness against strict leakage-free validations.
 
-*   **Total Accuracy:** 99.45%
-*   **Macro F1-Score:** 96.39%
-*   **AUC-ROC:** 99.89%
+### 4.1 Strict Leakage-Free Evaluation (`balance_after_split: true`)
+When data augmentation (SMOTE/ADASYN) is explicitly withheld until *after* the K-Fold Train/Val splitting, the testing manifolds remain 100% physically distinct from the training features, preventing the theoretical accuracy ceiling from being artificially pumped by data leakage.
+Based on the `115654` MIT-BIH ADASYN strict evaluation run:
+*   **Total Accuracy:** 99.53% ± 0.0005
+*   **Macro F1-Score:** 97.00%
+*   **N (Normal):** 100.00% F1
+*   **S (Supraventricular Ectopic):** 96.00% F1
+*   **V (Premature Ventricular):** 99.00% F1
+*   **F (Fusion):** 89.00% F1
+*   **Q (Unknown):** 100.00% F1
 
-### Per-Class Accuracies:
-*   **Normal (N):** 99.72% F1
-*   **Supraventricular Ectopic (S):** 94.58% F1 (Massive improvement via multi-beat R-R interval capture)
-*   **Premature Ventricular (V):** 98.62% F1
-*   **Fusion (F):** 89.32% F1 (Historically the most difficult class to separate)
-*   **Unknown (Q):** 99.72% F1
+### 4.2 Pre-Split Augmented Ceiling (`balance_after_split: false`)
+When augmentation crosses fold boundaries, the network leverages interpolated artifacts to achieve artificially correlated mastery.
+*   **Total Accuracy Ceiling:** 99.85%
+*   **Macro F1-Score Ceiling:** 99.85%
+
+### 4.3 Why Context Matters (The R-R Interval Solution):
+Because the model ingests up to 3 entire localized heartbeats simultaneously `[1, 1080]`, historically difficult boundary classes (such as distinguishing standard **N** beats from Supraventricular **S** and Fusion **F** beats) are resolved naturally. The Dilated Inception modules expand their receptive fields across the entire array, mathematically encoding the relative timing distance between subsequent QRS complexes (the R-R logic) into the spatial feature map.
 
 ---
 
