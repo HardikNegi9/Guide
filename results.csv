@@ -1,0 +1,6 @@
+database,record,noise_type,fs,duration_sec,input_snr_target,snr_input,snr_after_hp,snr_after_notch,snr_after_dwt,snr_boost_hp,snr_boost_notch,snr_boost_dwt,snr_boost_total,rmse_input,rmse_after_dwt,prd_input_pct,prd_after_dwt_pct
+MIT-BIH Arrhythmia,mitbih_100,combined,360,1805.5555555555557,11.68,11.68,1.2,1.22,1.19,-10.48,0.03,-0.03,-10.49,0.094379,0.315627,26.06,87.16
+MIT-BIH Arrhythmia,mitbih_101,combined,360,1805.5555555555557,11.68,11.68,1.85,1.87,1.85,-9.83,0.02,-0.03,-9.83,0.100594,0.311997,26.06,80.83
+MIT-BIH Arrhythmia,mitbih_102,combined,360,1805.5555555555557,11.68,11.68,1.72,1.74,1.69,-9.96,0.03,-0.05,-9.99,0.081055,0.255976,26.06,82.3
+MIT-BIH Arrhythmia,mitbih_103,combined,360,1805.5555555555557,11.68,11.68,3.53,3.57,3.5,-8.15,0.05,-0.08,-8.18,0.103311,0.26505,26.06,66.86
+MIT-BIH Arrhythmia,mitbih_104,combined,360,1805.5555555555557,11.68,11.68,2.62,2.69,2.6,-9.06,0.07,-0.09,-9.08,0.087743,0.249562,26.06,74.13
